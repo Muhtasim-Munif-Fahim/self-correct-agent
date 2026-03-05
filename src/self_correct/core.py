@@ -17,6 +17,7 @@ import asyncio
 import hashlib
 import logging
 import re
+import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -88,6 +89,7 @@ class _ClaimCache:
     def __init__(self, max_size: int = 256) -> None:
         self._cache: OrderedDict[str, Dict[str, Any]] = OrderedDict()
         self._max_size = max_size
+        self._lock = threading.Lock()
 
     @staticmethod
     def _key(claim: str) -> str:
@@ -97,18 +99,20 @@ class _ClaimCache:
     def get(self, claim: str) -> Optional[Dict[str, Any]]:
         """Return cached result or None."""
         key = self._key(claim)
-        if key in self._cache:
-            self._cache.move_to_end(key)
-            return self._cache[key]
+        with self._lock:
+            if key in self._cache:
+                self._cache.move_to_end(key)
+                return self._cache[key]
         return None
 
     def put(self, claim: str, result: Dict[str, Any]) -> None:
         """Store a verification result."""
         key = self._key(claim)
-        self._cache[key] = result
-        self._cache.move_to_end(key)
-        if len(self._cache) > self._max_size:
-            self._cache.popitem(last=False)
+        with self._lock:
+            self._cache[key] = result
+            self._cache.move_to_end(key)
+            if len(self._cache) > self._max_size:
+                self._cache.popitem(last=False)
 
     @property
     def size(self) -> int:
@@ -117,7 +121,8 @@ class _ClaimCache:
 
     def clear(self) -> None:
         """Clear all cached entries."""
-        self._cache.clear()
+        with self._lock:
+            self._cache.clear()
 
 
 # ------------------------------------------------------------------
@@ -141,6 +146,13 @@ class AntiHallucinator:
         re.compile(r"^\s*-\s+(.+)"),
         re.compile(r"^\s*\*\s+(.+)"),
     ]
+
+    _EXTRACTION_PROMPT = (
+        "Extract a numbered list of all discrete factual claims made "
+        "in the provided text. Focus on claims containing entities, "
+        "dates, numbers, or specific assertions. Output ONLY the "
+        "numbered list, nothing else."
+    )
 
     def __init__(
         self,
@@ -229,6 +241,8 @@ class AntiHallucinator:
 
     def _parse_claims(self, claims_text: str) -> List[str]:
         """Parse a numbered/bulleted list of claims from LLM output."""
+        if not claims_text or not claims_text.strip():
+            return []
         claims: List[str] = []
         for line in claims_text.strip().split("\n"):
             line = line.strip()
@@ -373,12 +387,7 @@ class AntiHallucinator:
         # Phase 2: Fact Extraction
         claims_text = self._call_llm(
             model=model,
-            system_prompt=(
-                "Extract a numbered list of all discrete factual claims made "
-                "in the provided text. Focus on claims containing entities, "
-                "dates, numbers, or specific assertions. Output ONLY the "
-                "numbered list, nothing else."
-            ),
+            system_prompt=self._EXTRACTION_PROMPT,
             user_prompt=f"Text to analyze:\n\n{draft}",
             usage=usage,
         )
@@ -485,12 +494,7 @@ class AntiHallucinator:
         claims_text = await asyncio.to_thread(
             self._call_llm,
             model,
-            (
-                "Extract a numbered list of all discrete factual claims made "
-                "in the provided text. Focus on claims containing entities, "
-                "dates, numbers, or specific assertions. Output ONLY the "
-                "numbered list, nothing else."
-            ),
+            self._EXTRACTION_PROMPT,
             f"Text to analyze:\n\n{draft}",
             usage,
         )
@@ -503,6 +507,7 @@ class AntiHallucinator:
                 verification_log=[{
                     "phase": "extraction",
                     "warning": "No claims extracted.",
+                    "raw_extraction": claims_text,
                 }],
                 token_usage=usage,
                 elapsed_seconds=time.monotonic() - start,

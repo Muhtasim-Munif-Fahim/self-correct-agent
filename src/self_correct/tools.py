@@ -8,7 +8,7 @@ A default ``DuckDuckGoSearchTool`` ships out of the box.
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +92,9 @@ class DuckDuckGoSearchTool(Tool):
             )
 
         results: List[SearchResult] = []
+        if not query or not query.strip():
+            logger.warning("Empty search query provided. Returning no results.")
+            return results
         try:
             with DDGS() as ddgs:
                 for r in ddgs.text(query, max_results=max_results):
