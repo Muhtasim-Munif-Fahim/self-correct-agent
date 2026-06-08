@@ -19,6 +19,7 @@ LLMs hallucinate. They invent paper titles, fabricate statistics, and confidentl
 - ⚡ **Async Parallel Verification** — `generate_async()` verifies all claims concurrently
 - 💰 **Token & Cost Tracking** — Full visibility into how many tokens verification costs
 - 🧠 **LRU Claim Cache** — Repeated claims skip re-verification, saving time and money
+- Cache management helpers — Inspect cache size, read the configured limit, or clear cached claims when you want a fresh verification pass
 - 🎚️ **Dynamic Strictness** — From `0.0` (passthrough) to `1.0` (strict empirical + tools)
 
 ## Installation
@@ -63,6 +64,9 @@ safe = AntiHallucinator(
     critique_prompt="Judge each claim against established clinical evidence.",
     correction_prompt="Rewrite the draft to remove unsupported clinical claims.",
 )
+
+print(safe.cache_size)
+safe.clear_cache()
 ```
 
 ## Web Search Verification

@@ -125,7 +125,13 @@ class _ClaimCache:
     @property
     def size(self) -> int:
         """Current number of cached entries."""
-        return len(self._cache)
+        with self._lock:
+            return len(self._cache)
+
+    @property
+    def max_size(self) -> int:
+        """Configured maximum number of cached entries."""
+        return self._max_size
 
     def clear(self) -> None:
         """Clear all cached entries."""
@@ -205,6 +211,20 @@ class AntiHallucinator:
     def cache(self) -> _ClaimCache:
         """Access the claim verification cache."""
         return self._cache
+
+    @property
+    def cache_size(self) -> int:
+        """Current number of cached claims."""
+        return self._cache.size
+
+    @property
+    def cache_max_size(self) -> int:
+        """Configured maximum cache size."""
+        return self._cache.max_size
+
+    def clear_cache(self) -> None:
+        """Remove all cached claim verification results."""
+        self._cache.clear()
 
     # ------------------------------------------------------------------
     # Private helpers

@@ -94,6 +94,20 @@ def test_cache_clear() -> None:
     assert cache.size == 0
 
 
+def test_cache_management_helpers() -> None:
+    """AntiHallucinator should expose basic cache controls."""
+    agent = AntiHallucinator(MagicMock(), cache_size=2)
+
+    assert agent.cache_size == 0
+    assert agent.cache_max_size == 2
+
+    agent.cache.put("Claim", {"is_valid": True})
+    assert agent.cache_size == 1
+
+    agent.clear_cache()
+    assert agent.cache_size == 0
+
+
 # ------------------------------------------------------------------
 # Initialization
 # ------------------------------------------------------------------
