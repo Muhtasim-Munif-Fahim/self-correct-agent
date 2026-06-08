@@ -4,74 +4,66 @@
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-A lightweight Python library that **automatically detects and prevents LLM hallucinations** using the Chain-of-Verification (CoVe) methodology.
+`self-correct-agent` is a small Python library for wrapping an LLM client with a Chain-of-Verification workflow. It drafts a response, extracts factual claims, critiques each claim, and rewrites the output when unsupported statements are found.
 
-## Why?
+It is designed for people who want a practical hallucination-reduction layer without having to replace their existing OpenAI-compatible client.
 
-LLMs hallucinate. They invent paper titles, fabricate statistics, and confidently state false facts. While models are bad at generating truth on the first try, research shows they are surprisingly good at **catching their own mistakes** when asked to self-critique ([Dhuliawala et al., 2023](https://arxiv.org/abs/2309.11495)).
+## Problem
 
-`self-correct-agent` packages this research into a **drop-in wrapper** around your existing LLM client.
+LLMs are useful at drafting text, but they still make confident mistakes. In production workflows that matters more than benchmark scores: one fabricated date, one unsupported citation, or one wrong number can make the whole answer unusable.
+
+This package turns that failure mode into a repeatable maintenance step:
+
+1. Draft an answer.
+2. Extract discrete factual claims.
+3. Verify each claim.
+4. Rewrite the draft when claims are weak or false.
 
 ## Features
 
-- 🔄 **4-Phase CoVe Pipeline** — Draft → Extract Claims → Critique → Correct
-- 🔍 **Web Search Verification** — Pluggable tools (DuckDuckGo included) for grounding claims in real-world evidence
-- ⚡ **Async Parallel Verification** — `generate_async()` verifies all claims concurrently
-- 💰 **Token & Cost Tracking** — Full visibility into how many tokens verification costs
-- 🧠 **LRU Claim Cache** — Repeated claims skip re-verification, saving time and money
-- Cache management helpers — Inspect cache size, read the configured limit, or clear cached claims when you want a fresh verification pass
-- 🎚️ **Dynamic Strictness** — From `0.0` (passthrough) to `1.0` (strict empirical + tools)
+- 4-phase Chain-of-Verification pipeline: draft, extract, critique, correct.
+- OpenAI-compatible client support through `client.chat.completions.create()`.
+- Optional web search verification with a pluggable `Tool` interface.
+- Async claim verification for faster checks on long drafts.
+- Thread-safe LRU cache for repeated claim verification.
+- Token usage tracking and simple cost estimation.
+- Custom prompts for draft, extraction, critique, and correction stages.
 
 ## Installation
 
 ```bash
 pip install self-correct
 
-# With web search support:
-pip install self-correct[search]
+# Development install with tests and web search support
+pip install -e ".[dev,search]"
 ```
 
-## Quick Start
+If you prefer pinned local development dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+## Quickstart
 
 ```python
-import openai
+from openai import OpenAI
 from self_correct import AntiHallucinator
 
-client = openai.OpenAI()
+client = OpenAI()
 safe = AntiHallucinator(client=client, strictness=1.0)
 
 response = safe.generate(
-    model="gpt-4o",
-    prompt="Explain the Transformer architecture from Vaswani et al. (2017)."
+    model="gpt-4o-mini",
+    prompt="Explain the Transformer architecture in two short paragraphs.",
 )
 
 print(response.content)
-print(f"Hallucinations caught: {len(response.hallucinations_caught)}")
-print(f"Tokens used: {response.token_usage.total_tokens}")
-print(f"Estimated cost: ${response.token_usage.estimate_cost():.4f}")
-print(f"Time: {response.elapsed_seconds:.1f}s")
+print("claims flagged:", len(response.hallucinations_caught))
+print("tokens used:", response.token_usage.total_tokens)
 ```
 
-You can also customize the prompts used at each stage if your domain needs
-different drafting, extraction, critique, or rewriting behavior:
-
-```python
-safe = AntiHallucinator(
-    client=client,
-    strictness=1.0,
-    draft_system_prompt="You are a careful medical assistant.",
-    extraction_prompt="Extract only clinical claims from the draft.",
-    critique_prompt="Judge each claim against established clinical evidence.",
-    correction_prompt="Rewrite the draft to remove unsupported clinical claims.",
-)
-
-print(safe.cache_size)
-safe.clear_cache()
-```
-
-## Web Search Verification
-
-At `strictness >= 0.8`, provide tools so the verifier searches the web before judging each claim:
+## Example With Web Search
 
 ```python
 from self_correct import AntiHallucinator, DuckDuckGoSearchTool
@@ -82,91 +74,74 @@ safe = AntiHallucinator(
     tools=[DuckDuckGoSearchTool()],
 )
 
-response = safe.generate(model="gpt-4o", prompt="Population of Tokyo?")
-
-for entry in response.verification_log:
-    print(f"  Claim: {entry['claim']}")
-    print(f"  Evidence used: {entry['evidence_used']}")
-    print(f"  Valid: {entry['is_valid']}")
-    print(f"  Cached: {entry['cached']}")
+response = safe.generate(model="gpt-4o-mini", prompt="What is the population of Tokyo?")
 ```
 
-## Async Parallel Verification
+## Demo
 
-For faster verification when many claims are extracted:
+The repository includes a self-contained demo that uses a mocked client, so it runs without API keys.
 
-```python
-import asyncio
-from self_correct import AntiHallucinator
+- Script: [`examples/demo.py`](examples/demo.py)
+- Notebook: [`examples/demo.ipynb`](examples/demo.ipynb)
 
-safe = AntiHallucinator(client=client, strictness=1.0)
-result = asyncio.run(safe.generate_async(model="gpt-4o", prompt="History of Python"))
-```
+The screenshot below is a lightweight visual summary of the pipeline and demo output.
 
-## Custom Tools
-
-Implement the `Tool` interface to add any verification backend:
-
-```python
-from self_correct import Tool, SearchResult
-
-class GoogleScholarTool(Tool):
-    @property
-    def name(self) -> str:
-        return "Google Scholar"
-
-    def search(self, query: str, max_results: int = 3) -> list[SearchResult]:
-        # Your API logic here
-        return [...]
-
-safe = AntiHallucinator(client=client, tools=[GoogleScholarTool()])
-```
-
-## Dynamic Strictness
-
-| Level | Behavior |
-|-------|----------|
-| `0.0` | Passthrough — no verification |
-| `0.5` | Light logical critique (catches obvious errors) |
-| `0.8` | Strict critique + web search tools (if provided) |
-| `1.0` | Maximum strictness — removes unverifiable claims |
+![Pipeline demo](assets/demo-screenshot.svg)
 
 ## How It Works
 
+1. **Draft** - generate a first-pass response.
+2. **Extract** - identify factual claims in the draft.
+3. **Critique** - verify each claim, optionally using tools.
+4. **Correct** - rewrite the draft to remove unsupported claims.
+
+## API Highlights
+
+```python
+safe = AntiHallucinator(
+    client=client,
+    strictness=1.0,
+    cache_size=256,
+    draft_system_prompt="You are a careful assistant.",
+    extraction_prompt="Extract only factual claims.",
+    critique_prompt="Check claims against evidence.",
+    correction_prompt="Rewrite conservatively.",
+)
+
+print(safe.cache_size)
+safe.clear_cache()
 ```
-User Prompt
-    │
-    ▼
-┌─────────────┐
-│  1. DRAFT   │  → Generate initial response
-└──────┬──────┘
-       │
-┌──────▼──────┐
-│ 2. EXTRACT  │  → Parse all factual claims
-└──────┬──────┘
-       │
-┌──────▼──────┐
-│ 3. CRITIQUE │  → Verify each claim (+ web search)
-│   [parallel]│    Cache results for reuse
-└──────┬──────┘
-       │
-┌──────▼──────┐
-│ 4. CORRECT  │  → Rewrite draft, removing false claims
-└──────┬──────┘
-       │
-       ▼
-  Verified Output
+
+## Tests
+
+Run the test suite locally:
+
+```bash
+python -m pytest -q
 ```
+
+The CI workflow also runs the demo script so the repository keeps a working example path, not just unit tests.
+
+## Roadmap
+
+- Add richer reporting formats for verification results.
+- Add more reference tools beyond web search.
+- Expose a small CLI for batch verification workflows.
+- Publish additional examples for research and policy writing use cases.
+
+## Release Notes
+
+The repository is maintained with a `v0.1.0` release target and a small, documented public API.
 
 ## References
 
 - Dhuliawala, S. et al. (2023). *Chain-of-Verification Reduces Hallucination in Large Language Models.* [arXiv:2309.11495](https://arxiv.org/abs/2309.11495)
-- Min, S. et al. (2023). *FActScore: Fine-grained Atomic Evaluation of Factual Precision.* [arXiv:2305.14251](https://arxiv.org/abs/2305.14251)
+- Min, S. et al. (2023). *FActScore: Fine-grained Atomic Evaluation of Factual Precision in Long Form Text Generation.* [arXiv:2305.14251](https://arxiv.org/abs/2305.14251)
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, testing, and pull request guidance.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT - see [LICENSE](LICENSE).
