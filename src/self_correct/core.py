@@ -36,11 +36,19 @@ class TokenUsage:
 
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    _lock: Any = field(default_factory=threading.Lock, init=False, repr=False, compare=False)
 
     @property
     def total_tokens(self) -> int:
         """Total tokens consumed."""
-        return self.prompt_tokens + self.completion_tokens
+        with self._lock:
+            return self.prompt_tokens + self.completion_tokens
+
+    def add(self, prompt_tokens: int = 0, completion_tokens: int = 0) -> None:
+        """Atomically add token counts from a single LLM call."""
+        with self._lock:
+            self.prompt_tokens += prompt_tokens
+            self.completion_tokens += completion_tokens
 
     def estimate_cost(
         self,

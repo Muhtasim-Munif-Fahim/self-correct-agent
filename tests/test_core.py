@@ -2,6 +2,7 @@
 
 import asyncio
 import pytest
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock
 from self_correct.core import AntiHallucinator, TokenUsage, _ClaimCache
 
@@ -30,6 +31,22 @@ def test_token_usage_cost_estimate() -> None:
     u = TokenUsage(prompt_tokens=1000, completion_tokens=1000)
     cost = u.estimate_cost(prompt_cost_per_1k=0.01, completion_cost_per_1k=0.03)
     assert abs(cost - 0.04) < 1e-9
+
+
+def test_token_usage_add_is_thread_safe() -> None:
+    """Concurrent updates should not lose token counts."""
+    usage = TokenUsage()
+
+    def _bump() -> None:
+        for _ in range(10_000):
+            usage.add(prompt_tokens=1, completion_tokens=2)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        list(executor.map(lambda _: _bump(), range(8)))
+
+    assert usage.prompt_tokens == 80_000
+    assert usage.completion_tokens == 160_000
+    assert usage.total_tokens == 240_000
 
 
 # ------------------------------------------------------------------
