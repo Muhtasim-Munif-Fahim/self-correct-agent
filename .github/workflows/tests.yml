@@ -27,4 +27,7 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Run tests
-        run: pytest tests/ -v
+        run: python -m pytest
+
+      - name: Run demo script
+        run: python examples/demo.py

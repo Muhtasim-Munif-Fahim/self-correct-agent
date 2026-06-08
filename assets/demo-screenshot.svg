@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720" role="img" aria-label="Self-correct agent demo screenshot">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#111827"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1f2937"/>
+      <stop offset="100%" stop-color="#111827"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="720" rx="32" fill="url(#bg)"/>
+  <rect x="48" y="48" width="1104" height="624" rx="28" fill="url(#panel)" stroke="#374151" stroke-width="2"/>
+  <rect x="64" y="64" width="110" height="18" rx="9" fill="#ef4444"/>
+  <rect x="184" y="64" width="110" height="18" rx="9" fill="#f59e0b"/>
+  <rect x="304" y="64" width="110" height="18" rx="9" fill="#22c55e"/>
+  <text x="80" y="132" fill="#f8fafc" font-family="Segoe UI, Arial, sans-serif" font-size="34" font-weight="700">self-correct-agent</text>
+  <text x="80" y="176" fill="#cbd5e1" font-family="Consolas, Menlo, monospace" font-size="22">Draft -> Extract claims -> Critique -> Correct</text>
+  <rect x="80" y="218" width="520" height="360" rx="20" fill="#0b1220" stroke="#334155" stroke-width="2"/>
+  <text x="110" y="264" fill="#38bdf8" font-family="Consolas, Menlo, monospace" font-size="24">$ python examples/demo.py</text>
+  <text x="110" y="312" fill="#e2e8f0" font-family="Consolas, Menlo, monospace" font-size="22">claims flagged: 1</text>
+  <text x="110" y="354" fill="#e2e8f0" font-family="Consolas, Menlo, monospace" font-size="22">tokens used: 210</text>
+  <text x="110" y="396" fill="#e2e8f0" font-family="Consolas, Menlo, monospace" font-size="22">estimated cost: $0.0012</text>
+  <text x="110" y="468" fill="#fca5a5" font-family="Consolas, Menlo, monospace" font-size="22">Flagged claim: Moon is cheese.</text>
+  <text x="110" y="520" fill="#86efac" font-family="Consolas, Menlo, monospace" font-size="22">Corrected output: Moon is rock.</text>
+  <rect x="648" y="218" width="440" height="360" rx="20" fill="#111827" stroke="#334155" stroke-width="2"/>
+  <text x="684" y="270" fill="#f8fafc" font-family="Segoe UI, Arial, sans-serif" font-size="24" font-weight="700">Maintenance signals</text>
+  <text x="684" y="326" fill="#cbd5e1" font-family="Segoe UI, Arial, sans-serif" font-size="22">• README with install, quickstart, roadmap</text>
+  <text x="684" y="368" fill="#cbd5e1" font-family="Segoe UI, Arial, sans-serif" font-size="22">• pyproject + requirements.txt</text>
+  <text x="684" y="410" fill="#cbd5e1" font-family="Segoe UI, Arial, sans-serif" font-size="22">• tests and GitHub Actions</text>
+  <text x="684" y="452" fill="#cbd5e1" font-family="Segoe UI, Arial, sans-serif" font-size="22">• demo notebook and release tag</text>
+  <text x="80" y="628" fill="#94a3b8" font-family="Segoe UI, Arial, sans-serif" font-size="18">Visual summary for README. The actual demo script runs locally without API keys.</text>
+</svg>
