@@ -51,6 +51,20 @@ print(f"Estimated cost: ${response.token_usage.estimate_cost():.4f}")
 print(f"Time: {response.elapsed_seconds:.1f}s")
 ```
 
+You can also customize the prompts used at each stage if your domain needs
+different drafting, extraction, critique, or rewriting behavior:
+
+```python
+safe = AntiHallucinator(
+    client=client,
+    strictness=1.0,
+    draft_system_prompt="You are a careful medical assistant.",
+    extraction_prompt="Extract only clinical claims from the draft.",
+    critique_prompt="Judge each claim against established clinical evidence.",
+    correction_prompt="Rewrite the draft to remove unsupported clinical claims.",
+)
+```
+
 ## Web Search Verification
 
 At `strictness >= 0.8`, provide tools so the verifier searches the web before judging each claim:

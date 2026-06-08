@@ -168,6 +168,15 @@ class AntiHallucinator:
         strictness: float = 1.0,
         tools: Optional[List[Any]] = None,
         cache_size: int = 256,
+        draft_system_prompt: str = "You are a helpful assistant.",
+        extraction_prompt: str = _EXTRACTION_PROMPT,
+        critique_prompt: Optional[str] = None,
+        correction_prompt: str = (
+            "You are a strict editor. Rewrite the provided draft to "
+            "completely eliminate any factual claims that were flagged. "
+            "You may remove sentences or rewrite them. "
+            "Do NOT add new factual claims."
+        ),
     ) -> None:
         """
         Initialize the AntiHallucinator wrapper.
@@ -187,6 +196,10 @@ class AntiHallucinator:
         self.strictness = max(0.0, min(1.0, strictness))
         self.tools = tools or []
         self._cache = _ClaimCache(max_size=cache_size)
+        self._draft_system_prompt = draft_system_prompt
+        self._extraction_prompt = extraction_prompt
+        self._critique_prompt = critique_prompt
+        self._correction_prompt = correction_prompt
 
     @property
     def cache(self) -> _ClaimCache:
@@ -227,9 +240,9 @@ class AntiHallucinator:
             if usage is not None:
                 resp_usage = getattr(response, "usage", None)
                 if resp_usage is not None:
-                    usage.prompt_tokens += getattr(resp_usage, "prompt_tokens", 0)
-                    usage.completion_tokens += getattr(
-                        resp_usage, "completion_tokens", 0
+                    usage.add(
+                        prompt_tokens=getattr(resp_usage, "prompt_tokens", 0),
+                        completion_tokens=getattr(resp_usage, "completion_tokens", 0),
                     )
 
             content = response.choices[0].message.content
@@ -269,6 +282,8 @@ class AntiHallucinator:
 
     def _build_critique_prompt(self) -> str:
         """Build the critique system prompt based on strictness."""
+        if self._critique_prompt is not None:
+            return self._critique_prompt
         if self.strictness >= 0.8:
             return (
                 "Critique the following factual claim with strict empirical "
@@ -379,7 +394,7 @@ class AntiHallucinator:
         # Phase 1: Drafting
         draft = self._call_llm(
             model=model,
-            system_prompt="You are a helpful assistant.",
+            system_prompt=self._draft_system_prompt,
             user_prompt=prompt,
             usage=usage,
         )
@@ -395,7 +410,7 @@ class AntiHallucinator:
         # Phase 2: Fact Extraction
         claims_text = self._call_llm(
             model=model,
-            system_prompt=self._EXTRACTION_PROMPT,
+            system_prompt=self._extraction_prompt,
             user_prompt=f"Text to analyze:\n\n{draft}",
             usage=usage,
         )
@@ -443,12 +458,7 @@ class AntiHallucinator:
 
         final_content = self._call_llm(
             model=model,
-            system_prompt=(
-                "You are a strict editor. Rewrite the provided draft to "
-                "completely eliminate any factual claims that were flagged. "
-                "You may remove sentences or rewrite them. "
-                "Do NOT add new factual claims."
-            ),
+            system_prompt=self._correction_prompt,
             user_prompt=(
                 f"Original Draft:\n{draft}\n\n"
                 f"Critiques to address:\n"
@@ -488,7 +498,7 @@ class AntiHallucinator:
 
         # Phase 1 & 2 are sequential (need the draft before extraction)
         draft = await asyncio.to_thread(
-            self._call_llm, model, "You are a helpful assistant.", prompt, usage
+            self._call_llm, model, self._draft_system_prompt, prompt, usage
         )
 
         if self.strictness == 0.0:
@@ -502,7 +512,7 @@ class AntiHallucinator:
         claims_text = await asyncio.to_thread(
             self._call_llm,
             model,
-            self._EXTRACTION_PROMPT,
+            self._extraction_prompt,
             f"Text to analyze:\n\n{draft}",
             usage,
         )
@@ -554,12 +564,7 @@ class AntiHallucinator:
         final_content = await asyncio.to_thread(
             self._call_llm,
             model,
-            (
-                "You are a strict editor. Rewrite the provided draft to "
-                "completely eliminate any factual claims that were flagged. "
-                "You may remove sentences or rewrite them. "
-                "Do NOT add new factual claims."
-            ),
+            self._correction_prompt,
             (
                 f"Original Draft:\n{draft}\n\n"
                 f"Critiques to address:\n"

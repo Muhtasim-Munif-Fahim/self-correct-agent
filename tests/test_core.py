@@ -192,6 +192,42 @@ def test_strictness_high_uses_strict_critique() -> None:
     assert "empirical" in prompt.lower()
 
 
+def test_custom_prompts_are_used() -> None:
+    """Custom prompts should flow through all pipeline stages."""
+    mock_client = MagicMock()
+
+    responses = [
+        _mock_response("Draft output."),
+        _mock_response("1. Draft output.\n2. Moon is cheese."),
+        _mock_response("VERIFIED: True."),
+        _mock_response("VERIFIED: False. The moon is not cheese."),
+        _mock_response("Draft output."),
+    ]
+
+    def mock_create(*args, **kwargs):
+        return responses.pop(0)
+
+    mock_client.chat.completions.create.side_effect = mock_create
+
+    agent = AntiHallucinator(
+        mock_client,
+        strictness=1.0,
+        draft_system_prompt="Draft mode",
+        extraction_prompt="Extract claims only",
+        critique_prompt="Check claims with care",
+        correction_prompt="Rewrite the draft conservatively",
+    )
+
+    agent.generate(model="dummy", prompt="Tell me something.")
+
+    calls = mock_client.chat.completions.create.call_args_list
+    assert calls[0].kwargs["messages"][0]["content"] == "Draft mode"
+    assert calls[1].kwargs["messages"][0]["content"] == "Extract claims only"
+    assert calls[2].kwargs["messages"][0]["content"] == "Check claims with care"
+    assert calls[3].kwargs["messages"][0]["content"] == "Check claims with care"
+    assert calls[4].kwargs["messages"][0]["content"] == "Rewrite the draft conservatively"
+
+
 # ------------------------------------------------------------------
 # Token tracking
 # ------------------------------------------------------------------
