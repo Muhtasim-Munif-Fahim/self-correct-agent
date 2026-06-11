@@ -1,4 +1,4 @@
-"""Core module for self-correct-agent: Chain-of-Verification anti-hallucination wrapper.
+﻿"""Core module for self-correct-agent: Chain-of-Verification anti-hallucination wrapper.
 
 This library implements the Chain-of-Verification (CoVe) methodology
 described by Dhuliawala et al. (2023) [1] for reducing hallucinations
@@ -85,6 +85,88 @@ class AntiHallucinationResponse:
     verification_log: List[Dict[str, Any]] = field(default_factory=list)
     token_usage: TokenUsage = field(default_factory=TokenUsage)
     elapsed_seconds: float = 0.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize the response to a plain dictionary."""
+        return {
+            "content": self.content,
+            "hallucinations_caught": self.hallucinations_caught,
+            "verification_log": self.verification_log,
+            "token_usage": {
+                "prompt_tokens": self.token_usage.prompt_tokens,
+                "completion_tokens": self.token_usage.completion_tokens,
+                "total_tokens": self.token_usage.total_tokens,
+            },
+            "elapsed_seconds": round(self.elapsed_seconds, 3),
+        }
+
+    def to_json(self, indent: int = 2, ensure_ascii: bool = False) -> str:
+        """
+        Serialize the response to a JSON string.
+
+        Parameters
+        ----------
+        indent : int
+            Pretty-print indentation level.
+        ensure_ascii : bool
+            If True, non-ASCII characters are escaped.
+
+        Returns
+        -------
+        str
+            JSON string representation.
+        """
+        import json
+        return json.dumps(self.to_dict(), indent=indent, ensure_ascii=ensure_ascii)
+
+    def to_markdown(self, include_log: bool = False) -> str:
+        """
+        Format the response as a human-readable Markdown report.
+
+        Parameters
+        ----------
+        include_log : bool
+            If True, include the full verification log in the output.
+
+        Returns
+        -------
+        str
+            Markdown-formatted report.
+        """
+        lines: List[str] = []
+        lines.append("# Self-Correct Agent Report")
+        lines.append("")
+        lines.append(f"- **Tokens used**: {self.token_usage.total_tokens}")
+        lines.append(f"- **Duration**: {self.elapsed_seconds:.2f}s")
+        lines.append(f"- **Hallucinations caught**: {len(self.hallucinations_caught)}")
+        lines.append("")
+
+        if self.hallucinations_caught:
+            lines.append("## Flagged Claims")
+            lines.append("")
+            for i, h in enumerate(self.hallucinations_caught, 1):
+                lines.append(f"{i}. {h}")
+                lines.append("")
+
+        lines.append("## Final Output")
+        lines.append("")
+        lines.append(self.content)
+        lines.append("")
+
+        if include_log and self.verification_log:
+            lines.append("## Verification Log")
+            lines.append("")
+            for entry in self.verification_log:
+                claim = entry.get("claim", "N/A")
+                valid = "\u2713" if entry.get("is_valid") else "\u2717"
+                cached = " (cached)" if entry.get("cached") else ""
+                lines.append(f"- {valid} **{claim}**{cached}")
+                critique = entry.get("critique", "")
+                if critique:
+                    lines.append(f"  - *Critique*: {critique[:200]}")
+                lines.append("")
+
+        return "\n".join(lines)
 
 
 # ------------------------------------------------------------------

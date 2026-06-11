@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "self-correct"
-version = "0.1.0"
+version = "0.2.0"
 description = "A lightweight anti-hallucination wrapper for LLMs using Chain-of-Verification."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -34,6 +34,7 @@ search = ["duckduckgo-search>=6.0.0"]
 dev = [
   "pytest>=8.0.0",
   "nbformat>=5.10.0",
+  "wikipedia>=1.4.0",
 ]
 
 [project.urls]
@@ -51,3 +52,6 @@ where = ["src"]
 testpaths = ["tests"]
 addopts = "-q"
 
+
+[project.scripts]
+self-correct = "self_correct.cli:main"
