@@ -3,6 +3,7 @@
 [![Tests](https://github.com/Muhtasim-Munif-Fahim/self-correct-agent/actions/workflows/tests.yml/badge.svg)](https://github.com/Muhtasim-Munif-Fahim/self-correct-agent/actions)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![PyPI version](https://img.shields.io/badge/pypi-v0.2.0-blue)](https://pypi.org/project/self-correct/)
 
 `self-correct-agent` is a small Python library for wrapping an LLM client with a Chain-of-Verification workflow. It drafts a response, extracts factual claims, critiques each claim, and rewrites the output when unsupported statements are found.
 
@@ -23,18 +24,23 @@ This package turns that failure mode into a repeatable maintenance step:
 
 - 4-phase Chain-of-Verification pipeline: draft, extract, critique, correct.
 - OpenAI-compatible client support through `client.chat.completions.create()`.
-- Optional web search verification with a pluggable `Tool` interface.
+- Pluggable verification **Tool** interface with three built-in backends:
+  - `DuckDuckGoSearchTool` — web search (default)
+  - `WikipediaSearchTool` — Wikipedia article summaries
+  - `StaticKnowledgeTool` — user-provided knowledge base (dict, JSON file, or URL)
 - Async claim verification for faster checks on long drafts.
 - Thread-safe LRU cache for repeated claim verification.
 - Token usage tracking and simple cost estimation.
 - Custom prompts for draft, extraction, critique, and correction stages.
+- Rich report exports: `to_dict()`, `to_json()`, `to_markdown()`.
+- Command-line interface with `verify`, `batch`, and `info` subcommands.
 
 ## Installation
 
 ```bash
 pip install self-correct
 
-# Development install with tests and web search support
+# Development install with all tools and tests
 pip install -e ".[dev,search]"
 ```
 
@@ -63,7 +69,9 @@ print("claims flagged:", len(response.hallucinations_caught))
 print("tokens used:", response.token_usage.total_tokens)
 ```
 
-## Example With Web Search
+## Verification Tools
+
+### DuckDuckGo (web search)
 
 ```python
 from self_correct import AntiHallucinator, DuckDuckGoSearchTool
@@ -77,12 +85,116 @@ safe = AntiHallucinator(
 response = safe.generate(model="gpt-4o-mini", prompt="What is the population of Tokyo?")
 ```
 
+### Wikipedia (article summaries)
+
+```python
+from self_correct import AntiHallucinator, WikipediaSearchTool
+
+safe = AntiHallucinator(
+    client=client,
+    strictness=1.0,
+    tools=[WikipediaSearchTool(lang="en")],
+)
+```
+
+### Static knowledge base
+
+```python
+from self_correct import StaticKnowledgeTool
+
+# From a dictionary
+kb = StaticKnowledgeTool({
+    "tokyo population": "Tokyo has ~14 million residents.",
+    "einstein": "Developed the theory of relativity.",
+})
+
+# From a JSON file
+kb = StaticKnowledgeTool.from_json("knowledge.json")
+
+# From a URL
+kb = StaticKnowledgeTool.from_json_url("https://example.com/kb.json")
+
+safe = AntiHallucinator(client=client, tools=[kb])
+```
+
+### Multiple tools
+
+```python
+safe = AntiHallucinator(
+    client=client,
+    strictness=1.0,
+    tools=[DuckDuckGoSearchTool(), WikipediaSearchTool()],
+)
+```
+
+## Report Exports
+
+Responses can be exported in multiple formats:
+
+```python
+result = safe.generate(model="gpt-4o-mini", prompt="...")
+
+# Plain dictionary
+data = result.to_dict()
+
+# JSON string
+print(result.to_json(indent=2))
+
+# Markdown report (with optional verification log)
+print(result.to_markdown(include_log=True))
+```
+
+## CLI
+
+The package ships with a `self-correct` CLI:
+
+```bash
+# Verify a single prompt
+self-correct verify --model gpt-4o-mini --prompt "Explain quantum computing."
+
+# Read prompt from file and output as JSON
+self-correct verify --model gpt-4o-mini --file input.txt --output report.json
+
+# Enable verification tools
+self-correct verify --model gpt-4o-mini --prompt "..." --tools duckduckgo wikipedia
+
+# Markdown report with full verification log
+self-correct verify --model gpt-4o-mini --file input.txt --output-format markdown --include-log
+
+# Batch process multiple prompts (JSONL format)
+echo '{"id": "1", "prompt": "Explain transformers"}
+{"id": "2", "prompt": "What is RLHF?"}' > prompts.jsonl
+
+self-correct batch --input prompts.jsonl --output results.jsonl --model gpt-4o-mini
+
+# Show package info
+self-correct info
+```
+
+### Batch JSONL format
+
+Input file (one JSON object per line):
+
+```jsonl
+{"id": "001", "prompt": "Explain the Transformer architecture."}
+{"id": "002", "prompt": "What is the capital of France?"}
+{"id": "003", "prompt": "Describe quantum entanglement."}
+```
+
+Output file (adds verification results to each input line):
+
+```jsonl
+{"id": "001", "content": "...", "hallucinations_caught": [], "token_usage": {...}, "elapsed_seconds": 1.23}
+{"id": "002", "content": "...", "hallucinations_caught": ["Claim '...' flagged: ..."], "token_usage": {...}, "elapsed_seconds": 0.89}
+```
+
 ## Demo
 
 The repository includes a self-contained demo that uses a mocked client, so it runs without API keys.
 
 - Script: [`examples/demo.py`](examples/demo.py)
 - Notebook: [`examples/demo.ipynb`](examples/demo.ipynb)
+- Tool comparison demo: [`examples/tool_comparison_demo.py`](examples/tool_comparison_demo.py)
 
 The screenshot below is a lightweight visual summary of the pipeline and demo output.
 
@@ -124,14 +236,17 @@ The CI workflow also runs the demo script so the repository keeps a working exam
 
 ## Roadmap
 
-- Add richer reporting formats for verification results.
-- Add more reference tools beyond web search.
-- Expose a small CLI for batch verification workflows.
+- ~~Add more reference tools beyond web search.~~ ? v0.2.0
+- ~~Expose a small CLI for batch verification workflows.~~ ? v0.2.0
+- ~~Add richer reporting formats for verification results.~~ ? v0.2.0
 - Publish additional examples for research and policy writing use cases.
+- Structured output extraction via OpenAI function calling.
+- Hallucination density scoring.
 
 ## Release Notes
 
-The repository is maintained with a `v0.1.0` release target and a small, documented public API.
+- **v0.2.0** — WikipediaSearchTool, StaticKnowledgeTool, CLI, batch mode, report exports.
+- **v0.1.0** — Initial release: CoVe pipeline, DuckDuckGo tool, async, cache.
 
 ## References
 

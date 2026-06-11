@@ -13,6 +13,7 @@ Usage::
 import argparse
 import json
 import sys
+import time
 from typing import Optional
 
 from .core import AntiHallucinator
@@ -69,6 +70,42 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # info subcommand
     info = sub.add_parser("info", help="Show package information")
+
+    # batch subcommand
+    batch = sub.add_parser("batch", help="Process multiple prompts from a JSONL file")
+    batch.add_argument(
+        "--input", "-i", required=True,
+        help="Input JSONL file (each line: {\"id\": \"...\", \"prompt\": \"...\"})",
+    )
+    batch.add_argument(
+        "--output", "-o", default=None,
+        help="Output JSONL file (default: stdout)",
+    )
+    batch.add_argument(
+        "--model", default="gpt-4o-mini",
+        help="LLM model name (default: gpt-4o-mini)",
+    )
+    batch.add_argument(
+        "--strictness", type=float, default=1.0,
+        help="Verification strictness 0.0-1.0 (default: 1.0)",
+    )
+    batch.add_argument(
+        "--tools", nargs="*", default=[],
+        choices=["duckduckgo", "wikipedia"],
+        help="Verification tools to enable",
+    )
+    batch.add_argument(
+        "--max-items", type=int, default=None,
+        help="Maximum number of items to process (default: all)",
+    )
+    batch.add_argument(
+        "--no-cache", action="store_true",
+        help="Disable claim verification cache",
+    )
+    batch.add_argument(
+        "--delay", type=float, default=0.0,
+        help="Delay in seconds between items (to avoid rate limits)",
+    )
 
     return parser
 
@@ -139,7 +176,7 @@ def cmd_verify(args: argparse.Namespace) -> None:
         if result.hallucinations_caught:
             lines.append("--- Flagged Claims ---")
             for h in result.hallucinations_caught:
-                lines.append(f"  • {h}")
+                lines.append(f"   {h}")
             lines.append("")
         lines.append("--- Final Output ---")
         lines.append(result.content)
@@ -166,6 +203,83 @@ def cmd_info() -> None:
     print(json.dumps(info, indent=2))
 
 
+def cmd_batch(args: argparse.Namespace) -> None:
+    """Execute the batch subcommand: process a JSONL file."""
+    from openai import OpenAI
+
+    tools = []
+    if "duckduckgo" in args.tools:
+        tools.append(DuckDuckGoSearchTool())
+    if "wikipedia" in args.tools:
+        tools.append(WikipediaSearchTool())
+
+    hallu = AntiHallucinator(
+        client=OpenAI(),
+        strictness=args.strictness,
+        tools=tools or None,
+        cache_size=0 if args.no_cache else 256,
+    )
+
+    # Read input
+    items: list[dict] = []
+    with open(args.input, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                items.append(json.loads(line))
+
+    if args.max_items:
+        items = items[:args.max_items]
+
+    total = len(items)
+    if total == 0:
+        print("No items to process.", file=sys.stderr)
+        return
+
+    print(f"Processing {total} item(s)...", file=sys.stderr)
+
+    results: list[dict] = []
+    for idx, item in enumerate(items, 1):
+        item_id = item.get("id", str(idx))
+        prompt = item.get("prompt", "")
+        if not prompt:
+            print(f"  [{idx}/{total}] Skipping item '{item_id}': no prompt", file=sys.stderr)
+            continue
+
+        print(f"  [{idx}/{total}] Processing '{item_id}'...", file=sys.stderr)
+        try:
+            result = hallu.generate(model=args.model, prompt=prompt)
+            result_dict = result.to_dict()
+            result_dict["id"] = item_id
+            result_dict["prompt"] = prompt
+            results.append(result_dict)
+        except Exception as exc:
+            results.append({
+                "id": item_id,
+                "prompt": prompt,
+                "error": f"{type(exc).__name__}: {exc}",
+            })
+            print(f"  [{idx}/{total}] Error: {exc}", file=sys.stderr)
+
+        if args.delay > 0 and idx < total:
+            time.sleep(args.delay)
+
+    # Write output
+    output_lines = [json.dumps(r, ensure_ascii=False) for r in results]
+    output = "\n".join(output_lines) + "\n"
+
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write(output)
+        print(f"Batch results written to {args.output}", file=sys.stderr)
+    else:
+        print(output)
+
+    # Summary to stderr
+    errors = sum(1 for r in results if "error" in r)
+    print(f"Done: {len(results)} processed, {errors} error(s).", file=sys.stderr)
+
+
 def main(argv: Optional[list[str]] = None) -> None:
     """Main CLI entry point."""
     parser = _build_parser()
@@ -173,6 +287,8 @@ def main(argv: Optional[list[str]] = None) -> None:
 
     if args.command == "verify":
         cmd_verify(args)
+    elif args.command == "batch":
+        cmd_batch(args)
     elif args.command == "info":
         cmd_info()
     else:
