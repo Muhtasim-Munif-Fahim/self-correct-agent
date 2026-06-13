@@ -14,7 +14,7 @@
   <rect x="64" y="64" width="110" height="18" rx="9" fill="#ef4444"/>
   <rect x="184" y="64" width="110" height="18" rx="9" fill="#f59e0b"/>
   <rect x="304" y="64" width="110" height="18" rx="9" fill="#22c55e"/>
-  <text x="80" y="132" fill="#f8fafc" font-family="Segoe UI, Arial, sans-serif" font-size="34" font-weight="700">self-correct-agent</text>
+  <text x="80" y="132" fill="#f8fafc" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="34" font-weight="700">self-correct-agent</text>
   <text x="80" y="176" fill="#cbd5e1" font-family="Consolas, Menlo, monospace" font-size="22">Draft -> Extract claims -> Critique -> Correct</text>
   <rect x="80" y="218" width="520" height="360" rx="20" fill="#0b1220" stroke="#334155" stroke-width="2"/>
   <text x="110" y="264" fill="#38bdf8" font-family="Consolas, Menlo, monospace" font-size="24">$ python examples/demo.py</text>
@@ -24,10 +24,10 @@
   <text x="110" y="468" fill="#fca5a5" font-family="Consolas, Menlo, monospace" font-size="22">Flagged claim: Moon is cheese.</text>
   <text x="110" y="520" fill="#86efac" font-family="Consolas, Menlo, monospace" font-size="22">Corrected output: Moon is rock.</text>
   <rect x="648" y="218" width="440" height="360" rx="20" fill="#111827" stroke="#334155" stroke-width="2"/>
-  <text x="684" y="270" fill="#f8fafc" font-family="Segoe UI, Arial, sans-serif" font-size="24" font-weight="700">Maintenance signals</text>
-  <text x="684" y="326" fill="#cbd5e1" font-family="Segoe UI, Arial, sans-serif" font-size="22">• README with install, quickstart, roadmap</text>
-  <text x="684" y="368" fill="#cbd5e1" font-family="Segoe UI, Arial, sans-serif" font-size="22">• pyproject + requirements.txt</text>
-  <text x="684" y="410" fill="#cbd5e1" font-family="Segoe UI, Arial, sans-serif" font-size="22">• tests and GitHub Actions</text>
-  <text x="684" y="452" fill="#cbd5e1" font-family="Segoe UI, Arial, sans-serif" font-size="22">• demo notebook and release tag</text>
-  <text x="80" y="628" fill="#94a3b8" font-family="Segoe UI, Arial, sans-serif" font-size="18">Visual summary for README. The actual demo script runs locally without API keys.</text>
+  <text x="684" y="270" fill="#f8fafc" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="24" font-weight="700">Maintenance signals</text>
+  <text x="684" y="326" fill="#cbd5e1" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="22">• README with install, quickstart, roadmap</text>
+  <text x="684" y="368" fill="#cbd5e1" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="22">• pyproject + requirements.txt</text>
+  <text x="684" y="410" fill="#cbd5e1" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="22">• tests and GitHub Actions</text>
+  <text x="684" y="452" fill="#cbd5e1" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="22">• demo notebook and release tag</text>
+  <text x="80" y="628" fill="#94a3b8" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="18">Visual summary for README. The actual demo script runs locally without API keys.</text>
 </svg>
