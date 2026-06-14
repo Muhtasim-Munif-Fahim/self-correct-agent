@@ -25,6 +25,10 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="self-correct",
         description="Anti-hallucination wrapper for LLMs using Chain-of-Verification.",
     )
+    parser.add_argument(
+        "--version", action="store_true",
+        help="Show version and exit",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     # verify subcommand
@@ -284,6 +288,11 @@ def main(argv: Optional[list[str]] = None) -> None:
     """Main CLI entry point."""
     parser = _build_parser()
     args = parser.parse_args(argv)
+
+    if getattr(args, "version", False):
+        from . import __version__
+        print(f"self-correct v{__version__}")
+        return 0
 
     if args.command == "verify":
         cmd_verify(args)
