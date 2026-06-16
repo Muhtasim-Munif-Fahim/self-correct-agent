@@ -236,12 +236,12 @@ The CI workflow also runs the demo script so the repository keeps a working exam
 
 ## Roadmap
 
-- ~~Add more reference tools beyond web search.~~ ? v0.2.0
-- ~~Expose a small CLI for batch verification workflows.~~ ? v0.2.0
-- ~~Add richer reporting formats for verification results.~~ ? v0.2.0
-- Publish additional examples for research and policy writing use cases.
-- Structured output extraction via OpenAI function calling.
-- Hallucination density scoring.
+- [x] ~~Add more reference tools beyond web search.~~ ? v0.2.0
+- [x] ~~Expose a small CLI for batch verification workflows.~~ ? v0.2.0
+- [x] ~~Add richer reporting formats for verification results.~~ ? v0.2.0
+- [ ] Publish additional examples for research and policy writing use cases.
+- [ ] Structured output extraction via OpenAI function calling.
+- [ ] Hallucination density scoring.
 
 ## Release Notes
 
