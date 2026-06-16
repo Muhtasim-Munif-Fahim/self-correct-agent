@@ -29,6 +29,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--version", action="store_true",
         help="Show version and exit",
     )
+    parser.add_argument("--verbose", action="store_true", help="Show detailed output")
     sub = parser.add_subparsers(dest="command", required=True)
 
     # verify subcommand
@@ -194,6 +195,9 @@ def cmd_verify(args: argparse.Namespace) -> None:
         print(f"Report written to {args.output}")
     else:
         print(output)
+
+    if args.verbose:
+        print(f"Verbose: {result.token_usage.total_tokens} tokens, {result.elapsed_seconds:.2f}s", file=sys.stderr)
 
 
 def cmd_info() -> None:
