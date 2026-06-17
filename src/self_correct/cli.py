@@ -30,6 +30,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Show version and exit",
     )
     parser.add_argument("--verbose", action="store_true", help="Show detailed output")
+    parser.add_argument("--quiet", action="store_true", help="Suppress all non-essential output")
     sub = parser.add_subparsers(dest="command", required=True)
 
     # verify subcommand
@@ -196,8 +197,9 @@ def cmd_verify(args: argparse.Namespace) -> None:
     else:
         print(output)
 
-    if args.verbose:
-        print(f"Verbose: {result.token_usage.total_tokens} tokens, {result.elapsed_seconds:.2f}s", file=sys.stderr)
+    if not getattr(args, "quiet", False):
+        if args.verbose:
+            print(f"Verbose: {result.token_usage.total_tokens} tokens, {result.elapsed_seconds:.2f}s", file=sys.stderr)
 
 
 def cmd_info() -> None:
@@ -241,20 +243,24 @@ def cmd_batch(args: argparse.Namespace) -> None:
 
     total = len(items)
     if total == 0:
-        print("No items to process.", file=sys.stderr)
+        if not getattr(args, "quiet", False):
+            print("No items to process.", file=sys.stderr)
         return
 
-    print(f"Processing {total} item(s)...", file=sys.stderr)
+    if not getattr(args, "quiet", False):
+        print(f"Processing {total} item(s)...", file=sys.stderr)
 
     results: list[dict] = []
     for idx, item in enumerate(items, 1):
         item_id = item.get("id", str(idx))
         prompt = item.get("prompt", "")
         if not prompt:
-            print(f"  [{idx}/{total}] Skipping item '{item_id}': no prompt", file=sys.stderr)
+            if not getattr(args, "quiet", False):
+                print(f"  [{idx}/{total}] Skipping item '{item_id}': no prompt", file=sys.stderr)
             continue
 
-        print(f"  [{idx}/{total}] Processing '{item_id}'...", file=sys.stderr)
+        if not getattr(args, "quiet", False):
+            print(f"  [{idx}/{total}] Processing '{item_id}'...", file=sys.stderr)
         try:
             result = hallu.generate(model=args.model, prompt=prompt)
             result_dict = result.to_dict()
@@ -267,7 +273,8 @@ def cmd_batch(args: argparse.Namespace) -> None:
                 "prompt": prompt,
                 "error": f"{type(exc).__name__}: {exc}",
             })
-            print(f"  [{idx}/{total}] Error: {exc}", file=sys.stderr)
+            if not getattr(args, "quiet", False):
+                print(f"  [{idx}/{total}] Error: {exc}", file=sys.stderr)
 
         if args.delay > 0 and idx < total:
             time.sleep(args.delay)
@@ -279,13 +286,15 @@ def cmd_batch(args: argparse.Namespace) -> None:
     if args.output:
         with open(args.output, "w", encoding="utf-8") as f:
             f.write(output)
-        print(f"Batch results written to {args.output}", file=sys.stderr)
+        if not getattr(args, "quiet", False):
+            print(f"Batch results written to {args.output}", file=sys.stderr)
     else:
         print(output)
 
     # Summary to stderr
     errors = sum(1 for r in results if "error" in r)
-    print(f"Done: {len(results)} processed, {errors} error(s).", file=sys.stderr)
+    if not getattr(args, "quiet", False):
+        print(f"Done: {len(results)} processed, {errors} error(s).", file=sys.stderr)
 
 
 def main(argv: Optional[list[str]] = None) -> None:
