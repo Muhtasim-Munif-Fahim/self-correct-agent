@@ -245,6 +245,7 @@ The CI workflow also runs the demo script so the repository keeps a working exam
 
 ## Release Notes
 
+- **v0.2.1** — --quiet flag, --verbose flag.
 - **v0.2.0** — WikipediaSearchTool, StaticKnowledgeTool, CLI, batch mode, report exports.
 - **v0.1.0** — Initial release: CoVe pipeline, DuckDuckGo tool, async, cache.
 
