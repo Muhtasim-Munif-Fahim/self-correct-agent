@@ -74,6 +74,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Disable claim verification cache",
     )
 
+    # tools subcommand
+    tools_parser = sub.add_parser("tools", help="List available verification tools")
+
     # info subcommand
     info = sub.add_parser("info", help="Show package information")
 
@@ -213,6 +216,19 @@ def cmd_info() -> None:
     print(json.dumps(info, indent=2))
 
 
+def _cmd_tools() -> int:
+    tools = [
+        ("DuckDuckGoSearchTool", "Web search via DuckDuckGo (no API key needed)"),
+        ("WikipediaSearchTool", "Wikipedia article summaries (requires wikipedia package)"),
+        ("StaticKnowledgeTool", "User-provided knowledge base (dict, JSON file URL)"),
+    ]
+    print(f"{'Tool':<25} {'Description':<60}")
+    print("-" * 85)
+    for name, desc in tools:
+        print(f"{name:<25} {desc:<60}")
+    return 0
+
+
 def cmd_batch(args: argparse.Namespace) -> None:
     """Execute the batch subcommand: process a JSONL file."""
     from openai import OpenAI
@@ -309,6 +325,8 @@ def main(argv: Optional[list[str]] = None) -> None:
 
     if args.command == "verify":
         cmd_verify(args)
+    elif args.command == "tools":
+        return _cmd_tools()
     elif args.command == "batch":
         cmd_batch(args)
     elif args.command == "info":
