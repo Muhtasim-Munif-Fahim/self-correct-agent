@@ -77,6 +77,9 @@ def _build_parser() -> argparse.ArgumentParser:
     # tools subcommand
     tools_parser = sub.add_parser("tools", help="List available verification tools")
 
+    # models subcommand
+    models_parser = sub.add_parser("models", help="List supported models with estimated costs")
+
     # info subcommand
     info = sub.add_parser("info", help="Show package information")
 
@@ -236,6 +239,21 @@ def _cmd_tools() -> int:
     return 0
 
 
+def _cmd_models() -> int:
+    models = [
+        ("gpt-4o-mini", "$0.15", "$0.60"),
+        ("gpt-4o", "$2.50", "$10.00"),
+        ("gpt-4-turbo", "$10.00", "$30.00"),
+        ("gpt-3.5-turbo", "$0.50", "$1.50"),
+    ]
+    print(f"{'Model':<25} {'Input/1M':<15} {'Output/1M':<15}")
+    print("-" * 55)
+    for name, inp, out in models:
+        print(f"{name:<25} {inp:<15} {out:<15}")
+    print("\n* Prices per 1M tokens, approximate. Check provider for current pricing.")
+    return 0
+
+
 def cmd_batch(args: argparse.Namespace) -> None:
     """Execute the batch subcommand: process a JSONL file."""
     from openai import OpenAI
@@ -334,6 +352,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         cmd_verify(args)
     elif args.command == "tools":
         return _cmd_tools()
+    elif args.command == "models":
+        return _cmd_models()
     elif args.command == "batch":
         cmd_batch(args)
     elif args.command == "info":
