@@ -62,7 +62,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     verify.add_argument(
         "--output-format", default=None,
-        choices=["json", "markdown", "text"],
+        choices=["json", "markdown", "text", "csv"],
         help="Output format (overrides auto-detection from --output)",
     )
     verify.add_argument(
@@ -170,6 +170,13 @@ def cmd_verify(args: argparse.Namespace) -> None:
         output = result.to_json()
     elif output_format == "markdown":
         output = result.to_markdown(include_log=args.include_log)
+    elif output_format == "csv":
+        import csv, io
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["status", "tokens", "hallucinations", "output"])
+        w.writerow([result.status, result.token_usage.total_tokens, len(result.hallucinations_caught), result.content[:200]])
+        output = buf.getvalue()
     else:
         # text format
         lines = [
