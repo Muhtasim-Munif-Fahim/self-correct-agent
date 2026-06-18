@@ -80,6 +80,9 @@ def _build_parser() -> argparse.ArgumentParser:
     # models subcommand
     models_parser = sub.add_parser("models", help="List supported models with estimated costs")
 
+    # history subcommand
+    history_parser = sub.add_parser("history", help="Show recent verification history (current session)")
+
     # info subcommand
     info = sub.add_parser("info", help="Show package information")
 
@@ -226,6 +229,11 @@ def cmd_info() -> None:
     print(json.dumps(info, indent=2))
 
 
+def _cmd_history() -> int:
+    print("History tracking is not yet implemented.")
+    return 0
+
+
 def _cmd_tools() -> int:
     tools = [
         ("DuckDuckGoSearchTool", "Web search via DuckDuckGo (no API key needed)"),
@@ -356,6 +364,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         return _cmd_models()
     elif args.command == "batch":
         cmd_batch(args)
+    elif args.command == "history":
+        return _cmd_history()
     elif args.command == "info":
         cmd_info()
     else:
