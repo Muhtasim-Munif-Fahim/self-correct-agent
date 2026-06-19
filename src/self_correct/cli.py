@@ -84,6 +84,13 @@ def _build_parser() -> argparse.ArgumentParser:
     # history subcommand
     history_parser = sub.add_parser("history", help="Show recent verification history (current session)")
 
+    # estimate subcommand
+    estimate = sub.add_parser("estimate", help="Estimate token count for a prompt")
+    estimate.add_argument(
+        "--prompt", "-p", required=True,
+        help="Prompt text to estimate tokens for",
+    )
+
     # config subcommand
     config = sub.add_parser("config", help="Manage configuration")
     config_sub = config.add_subparsers(dest="config_command", required=True)
@@ -229,6 +236,17 @@ def cmd_verify(args: argparse.Namespace) -> None:
     if not getattr(args, "quiet", False):
         if args.verbose:
             print(f"Verbose: {result.token_usage.total_tokens} tokens, {result.elapsed_seconds:.2f}s", file=sys.stderr)
+
+
+def cmd_estimate(args: argparse.Namespace) -> None:
+    """Estimate token count for a prompt."""
+    prompt = args.prompt
+    char_count = len(prompt)
+    word_count = len(prompt.split())
+    estimated_tokens = int(char_count / 4)
+    print(f"Characters: {char_count}")
+    print(f"Words: {word_count}")
+    print(f"Estimated tokens: ~{estimated_tokens}")
 
 
 def cmd_config_init(args: argparse.Namespace) -> None:
@@ -400,6 +418,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         return _cmd_history()
     elif args.command == "info":
         cmd_info()
+    elif args.command == "estimate":
+        cmd_estimate(args)
     elif args.command == "config":
         if args.config_command == "init":
             cmd_config_init(args)
