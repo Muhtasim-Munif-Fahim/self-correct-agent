@@ -84,6 +84,9 @@ def _build_parser() -> argparse.ArgumentParser:
     # history subcommand
     history_parser = sub.add_parser("history", help="Show recent verification history (current session)")
 
+    # upgrade subcommand
+    upgrade = sub.add_parser("upgrade", help="Suggest upgrading to the latest version")
+
     # info subcommand
     info = sub.add_parser("info", help="Show package information")
 
@@ -217,6 +220,11 @@ def cmd_verify(args: argparse.Namespace) -> None:
     if not getattr(args, "quiet", False):
         if args.verbose:
             print(f"Verbose: {result.token_usage.total_tokens} tokens, {result.elapsed_seconds:.2f}s", file=sys.stderr)
+
+
+def cmd_upgrade() -> None:
+    """Suggest upgrading to the latest version."""
+    print("Run: pip install --upgrade self-correct-agent")
 
 
 def cmd_info() -> None:
@@ -369,6 +377,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         return _cmd_history()
     elif args.command == "info":
         cmd_info()
+    elif args.command == "upgrade":
+        cmd_upgrade()
     else:
         parser.print_help()
         sys.exit(1)
