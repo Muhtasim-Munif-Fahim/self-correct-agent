@@ -84,6 +84,15 @@ def _build_parser() -> argparse.ArgumentParser:
     # history subcommand
     history_parser = sub.add_parser("history", help="Show recent verification history (current session)")
 
+    # config subcommand
+    config = sub.add_parser("config", help="Manage configuration")
+    config_sub = config.add_subparsers(dest="config_command", required=True)
+    config_init = config_sub.add_parser("init", help="Generate a config template")
+    config_init.add_argument(
+        "--output", "-o", default="self-correct.json",
+        help="Output path for the config file (default: self-correct.json)",
+    )
+
     # upgrade subcommand
     upgrade = sub.add_parser("upgrade", help="Suggest upgrading to the latest version")
 
@@ -220,6 +229,20 @@ def cmd_verify(args: argparse.Namespace) -> None:
     if not getattr(args, "quiet", False):
         if args.verbose:
             print(f"Verbose: {result.token_usage.total_tokens} tokens, {result.elapsed_seconds:.2f}s", file=sys.stderr)
+
+
+def cmd_config_init(args: argparse.Namespace) -> None:
+    """Generate a config template."""
+    template = {
+        "model": "gpt-4o-mini",
+        "strictness": 1.0,
+        "tools": [],
+        "no_cache": False,
+    }
+    with open(args.output, "w", encoding="utf-8") as f:
+        json.dump(template, f, indent=2)
+        f.write("\n")
+    print(f"Config template written to {args.output}")
 
 
 def cmd_upgrade() -> None:
@@ -377,6 +400,9 @@ def main(argv: Optional[list[str]] = None) -> None:
         return _cmd_history()
     elif args.command == "info":
         cmd_info()
+    elif args.command == "config":
+        if args.config_command == "init":
+            cmd_config_init(args)
     elif args.command == "upgrade":
         cmd_upgrade()
     else:
