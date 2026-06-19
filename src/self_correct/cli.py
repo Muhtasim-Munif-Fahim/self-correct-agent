@@ -31,6 +31,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--verbose", action="store_true", help="Show detailed output")
     parser.add_argument("--quiet", action="store_true", help="Suppress all non-essential output")
+    parser.add_argument("--no-color", action="store_true", help="Disable colored output")
     sub = parser.add_subparsers(dest="command", required=True)
 
     # verify subcommand
