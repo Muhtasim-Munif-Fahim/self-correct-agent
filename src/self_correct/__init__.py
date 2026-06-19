@@ -3,7 +3,7 @@
 from .core import AntiHallucinator, AntiHallucinationResponse, TokenUsage
 from .tools import DuckDuckGoSearchTool, SearchResult, StaticKnowledgeTool, Tool, WikipediaSearchTool
 
-__version__ = "0.2.2"
+__version__ = "0.2.3"
 
 __all__ = [
     "AntiHallucinator",
