@@ -150,7 +150,7 @@ The package ships with a `self-correct` CLI:
 
 ```bash
 # Verify a single prompt
-self-correct verify --model gpt-4o-mini --prompt "Explain quantum computing."
+self-correct verify --model gpt-4o-mini --prompt "Explain quantum computing." --max-tokens 500
 
 # Read prompt from file and output as JSON
 self-correct verify --model gpt-4o-mini --file input.txt --output report.json
@@ -165,7 +165,10 @@ self-correct verify --model gpt-4o-mini --file input.txt --output-format markdow
 echo '{"id": "1", "prompt": "Explain transformers"}
 {"id": "2", "prompt": "What is RLHF?"}' > prompts.jsonl
 
-self-correct batch --input prompts.jsonl --output results.jsonl --model gpt-4o-mini
+self-correct batch --input prompts.jsonl --output results.jsonl --model gpt-4o-mini --format json
+
+# Validate a config file
+self-correct config validate --config self-correct.json
 
 # Show package info
 self-correct info
