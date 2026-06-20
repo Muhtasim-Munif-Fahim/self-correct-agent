@@ -145,6 +145,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--delay", type=float, default=0.0,
         help="Delay in seconds between items (to avoid rate limits)",
     )
+    batch.add_argument(
+        "--format", choices=["json", "jsonl"], default="jsonl",
+        help="Output format (default: jsonl)",
+    )
 
     return parser
 
@@ -386,8 +390,11 @@ def cmd_batch(args: argparse.Namespace) -> None:
             time.sleep(args.delay)
 
     # Write output
-    output_lines = [json.dumps(r, ensure_ascii=False) for r in results]
-    output = "\n".join(output_lines) + "\n"
+    if getattr(args, "format", "jsonl") == "json":
+        output = json.dumps(results, ensure_ascii=False, indent=2) + "\n"
+    else:
+        output_lines = [json.dumps(r, ensure_ascii=False) for r in results]
+        output = "\n".join(output_lines) + "\n"
 
     if args.output:
         with open(args.output, "w", encoding="utf-8") as f:
