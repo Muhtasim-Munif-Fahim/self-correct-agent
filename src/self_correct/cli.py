@@ -103,6 +103,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--output", "-o", default="self-correct.json",
         help="Output path for the config file (default: self-correct.json)",
     )
+    config_validate = config_sub.add_parser("validate", help="Validate a config file")
+    config_validate.add_argument(
+        "--config", "-c", default="self-correct.json",
+        help="Path to the config file (default: self-correct.json)",
+    )
 
     # upgrade subcommand
     upgrade = sub.add_parser("upgrade", help="Suggest upgrading to the latest version")
@@ -410,6 +415,26 @@ def cmd_batch(args: argparse.Namespace) -> None:
         print(f"Done: {len(results)} processed, {errors} error(s).", file=sys.stderr)
 
 
+def cmd_config_validate(args: argparse.Namespace) -> None:
+    """Validate a config file."""
+    import os
+    config_path = args.config
+    if not os.path.exists(config_path):
+        print(f"Config file not found: {config_path}", file=sys.stderr)
+        return
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        required_keys = {"model"}
+        missing = required_keys - set(config.keys())
+        if missing:
+            print(f"Validation failed: missing required keys: {missing}")
+            return
+        print(f"Config file '{config_path}' is valid.")
+    except json.JSONDecodeError as e:
+        print(f"Validation failed: invalid JSON - {e}", file=sys.stderr)
+
+
 def main(argv: Optional[list[str]] = None) -> None:
     """Main CLI entry point."""
     parser = _build_parser()
@@ -437,6 +462,8 @@ def main(argv: Optional[list[str]] = None) -> None:
     elif args.command == "config":
         if args.config_command == "init":
             cmd_config_init(args)
+        elif args.config_command == "validate":
+            cmd_config_validate(args)
     elif args.command == "upgrade":
         cmd_upgrade()
     else:
