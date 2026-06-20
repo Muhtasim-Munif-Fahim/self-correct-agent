@@ -315,6 +315,7 @@ class AntiHallucinator:
     def _call_llm(
         self, model: str, system_prompt: str, user_prompt: str,
         usage: Optional[TokenUsage] = None,
+        max_tokens: int | None = None,
     ) -> str:
         """
         Invoke the underlying LLM provider.
@@ -330,7 +331,7 @@ class AntiHallucinator:
             The model's text response. Guaranteed non-None.
         """
         try:
-            response = self.client.chat.completions.create(
+            kwargs = dict(
                 model=model,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -338,6 +339,9 @@ class AntiHallucinator:
                 ],
                 temperature=0.2,
             )
+            if max_tokens is not None:
+                kwargs["max_tokens"] = max_tokens
+            response = self.client.chat.completions.create(**kwargs)
             # Accumulate token usage if the response provides it
             if usage is not None:
                 resp_usage = getattr(response, "usage", None)
@@ -426,6 +430,7 @@ class AntiHallucinator:
         critique_prompt: str,
         use_tools: bool,
         usage: TokenUsage,
+        max_tokens: int | None = None,
     ) -> Dict[str, Any]:
         """
         Verify a single claim, checking the cache first.
@@ -458,6 +463,7 @@ class AntiHallucinator:
             system_prompt=critique_prompt,
             user_prompt=user_msg,
             usage=usage,
+            max_tokens=max_tokens,
         )
 
         is_valid = "VERIFIED: True" in critique
@@ -483,7 +489,7 @@ class AntiHallucinator:
     # Public API: Synchronous
     # ------------------------------------------------------------------
 
-    def generate(self, model: str, prompt: str) -> AntiHallucinationResponse:
+    def generate(self, model: str, prompt: str, max_tokens: int | None = None) -> AntiHallucinationResponse:
         """
         Generate text with automatic hallucination detection and correction.
 
@@ -499,6 +505,7 @@ class AntiHallucinator:
             system_prompt=self._draft_system_prompt,
             user_prompt=prompt,
             usage=usage,
+            max_tokens=max_tokens,
         )
 
         if self.strictness == 0.0:
@@ -515,6 +522,7 @@ class AntiHallucinator:
             system_prompt=self._extraction_prompt,
             user_prompt=f"Text to analyze:\n\n{draft}",
             usage=usage,
+            max_tokens=max_tokens,
         )
 
         claims = self._parse_claims(claims_text)
@@ -541,7 +549,8 @@ class AntiHallucinator:
 
         for claim in claims:
             result = self._verify_single_claim(
-                claim, model, critique_prompt, use_tools, usage
+                claim, model, critique_prompt, use_tools, usage,
+                max_tokens=max_tokens,
             )
             verification_log.append(result)
             if not result["is_valid"]:
@@ -567,6 +576,7 @@ class AntiHallucinator:
                 + "\n\n".join(hallucinations_caught)
             ),
             usage=usage,
+            max_tokens=max_tokens,
         )
 
         return AntiHallucinationResponse(

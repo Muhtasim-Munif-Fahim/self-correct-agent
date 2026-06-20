@@ -74,6 +74,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-cache", action="store_true",
         help="Disable claim verification cache",
     )
+    verify.add_argument(
+        "--max-tokens", type=int, default=None,
+        help="Maximum tokens for the LLM response",
+    )
 
     # tools subcommand
     tools_parser = sub.add_parser("tools", help="List available verification tools")
@@ -361,7 +365,10 @@ def cmd_batch(args: argparse.Namespace) -> None:
         if not getattr(args, "quiet", False):
             print(f"  [{idx}/{total}] Processing '{item_id}'...", file=sys.stderr)
         try:
-            result = hallu.generate(model=args.model, prompt=prompt)
+    generate_kwargs = {"model": args.model, "prompt": prompt}
+    if args.max_tokens is not None:
+        generate_kwargs["max_tokens"] = args.max_tokens
+    result = hallu.generate(**generate_kwargs)
             result_dict = result.to_dict()
             result_dict["id"] = item_id
             result_dict["prompt"] = prompt
