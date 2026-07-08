@@ -1,13 +1,26 @@
-# Self-Correct Agent
+# Self-Correct Agent — Chain-of-Verification for Python
 
 [![Tests](https://github.com/Muhtasim-Munif-Fahim/self-correct-agent/actions/workflows/tests.yml/badge.svg)](https://github.com/Muhtasim-Munif-Fahim/self-correct-agent/actions)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![PyPI version](https://img.shields.io/badge/pypi-v0.2.0-blue)](https://pypi.org/project/self-correct/)
 
-`self-correct-agent` is a small Python library for wrapping an LLM client with a Chain-of-Verification workflow. It drafts a response, extracts factual claims, critiques each claim, and rewrites the output when unsupported statements are found.
+`self-correct-agent` is a small Python library for wrapping an LLM client with a **Chain-of-Verification (CoV)** workflow. It drafts a response, extracts factual claims, critiques each claim, and rewrites the output when unsupported statements are found.
 
 It is designed for people who want a practical hallucination-reduction layer without having to replace their existing OpenAI-compatible client.
+
+## Integrations
+
+Works with any client that exposes `client.chat.completions.create()`:
+
+| Provider | Setup |
+| --- | --- |
+| **OpenAI** | `from openai import OpenAI` |
+| **Anthropic** (via OpenAI SDK compat) | point `base_url` at your proxy |
+| **LiteLLM** | wrap with LiteLLM's OpenAI-compatible interface |
+| **Ollama / local** | `OpenAI(base_url="http://localhost:11434/v1", api_key="ollama")` |
+
+See [`benchmarks/`](benchmarks/) for a 20-prompt eval harness (mock + live modes).
 
 ## Problem
 

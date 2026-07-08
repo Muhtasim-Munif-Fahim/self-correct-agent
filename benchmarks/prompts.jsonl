@@ -1,0 +1,20 @@
+{"id": "geo-001", "prompt": "What is the capital of Bangladesh?", "category": "geography", "notes": "Single factual answer"}
+{"id": "geo-002", "prompt": "In what year did Bangladesh gain independence?", "category": "geography", "notes": "Date fact"}
+{"id": "sci-001", "prompt": "What is the chemical formula for water?", "category": "science", "notes": "Basic chemistry"}
+{"id": "sci-002", "prompt": "How many planets are in our solar system?", "category": "science", "notes": "Count fact"}
+{"id": "ml-001", "prompt": "Who introduced the Transformer architecture in 2017?", "category": "ml", "notes": "Attribution"}
+{"id": "ml-002", "prompt": "What does NAS stand for in deep learning?", "category": "ml", "notes": "Definition"}
+{"id": "hist-001", "prompt": "When did the first moon landing occur?", "category": "history", "notes": "Date fact"}
+{"id": "hist-002", "prompt": "Who wrote the novel Pride and Prejudice?", "category": "history", "notes": "Attribution"}
+{"id": "bio-001", "prompt": "What organ pumps blood through the human body?", "category": "biology", "notes": "Basic anatomy"}
+{"id": "bio-002", "prompt": "What gas do plants absorb during photosynthesis?", "category": "biology", "notes": "Process fact"}
+{"id": "math-001", "prompt": "What is the value of pi to two decimal places?", "category": "math", "notes": "Numeric fact"}
+{"id": "math-002", "prompt": "What is the sum of angles in a triangle in Euclidean geometry?", "category": "math", "notes": "Theorem"}
+{"id": "policy-001", "prompt": "What does SDG stand for in the UN development framework?", "category": "policy", "notes": "Acronym expansion"}
+{"id": "policy-002", "prompt": "Which UN body publishes the Human Development Index?", "category": "policy", "notes": "Institution"}
+{"id": "tech-001", "prompt": "What programming language is CPython implemented in?", "category": "tech", "notes": "Implementation detail"}
+{"id": "tech-002", "prompt": "What company maintains the PyTorch framework?", "category": "tech", "notes": "Attribution — verify current maintainer"}
+{"id": "edge-001", "prompt": "What does GGUF stand for in local LLM deployment?", "category": "edge-ml", "notes": "Acronym — may need tool verification"}
+{"id": "edge-002", "prompt": "Name one advantage of INT4 quantization for edge inference.", "category": "edge-ml", "notes": "Open-ended, checks unsupported claims"}
+{"id": "research-001", "prompt": "What is chain-of-verification in LLM pipelines?", "category": "research", "notes": "Concept summary"}
+{"id": "research-002", "prompt": "What is the RMSE metric used for in regression?", "category": "research", "notes": "Definition"}
