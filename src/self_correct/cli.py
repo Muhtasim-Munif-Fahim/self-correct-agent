@@ -16,7 +16,7 @@ import sys
 import time
 from typing import Optional
 
-from . import history
+from . import history, templates
 from .core import MODEL_PRICING, AntiHallucinator, model_pricing
 from .tools import DuckDuckGoSearchTool, WikipediaSearchTool
 
@@ -132,6 +132,21 @@ def _build_parser() -> argparse.ArgumentParser:
     compare_parser.add_argument(
         "--model", default=None,
         help="Model to price token differences with (default: read from the results)",
+    )
+
+    template_parser = sub.add_parser(
+        "template", aliases=["prompt"],
+        help="List, show and render built-in and user prompt templates",
+    )
+    template_sub = template_parser.add_subparsers(dest="template_command", required=True)
+    template_sub.add_parser("list", help="List available templates")
+    template_show = template_sub.add_parser("show", help="Print a template body")
+    template_show.add_argument("name", help="Template name")
+    template_render = template_sub.add_parser("render", help="Fill a template's placeholders")
+    template_render.add_argument("name", help="Template name")
+    template_render.add_argument(
+        "--var", action="append", default=[], metavar="KEY=VALUE",
+        help="Value for a placeholder; repeatable",
     )
 
     # estimate subcommand
@@ -537,6 +552,53 @@ def _cmd_history(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_template(args: argparse.Namespace) -> int:
+    """List, show or render a prompt template."""
+    if args.template_command == "list":
+        rows = templates.list_templates()
+        print(f"{'Name':<24}{'Source':<26}Description")
+        print("-" * 92)
+        for name, source, description in rows:
+            print(f"{name:<24}{source:<26}{description}")
+        print()
+        print(f"User templates are read from {templates.template_dir()}")
+        print("Add a .txt file there to define one; a matching name overrides a built-in.")
+        return 0
+
+    body = templates.get_template(args.name)
+    if body is None:
+        available = ", ".join(name for name, _, _ in templates.list_templates())
+        print(f"No template named '{args.name}'. Available: {available}", file=sys.stderr)
+        return 2
+
+    if args.template_command == "show":
+        expected = templates.placeholders(body)
+        print(body)
+        if expected:
+            print()
+            print(f"Placeholders: {', '.join('$' + name for name in expected)}")
+        return 0
+
+    values = {}
+    for pair in args.var:
+        if "=" not in pair:
+            print(f"Invalid --var '{pair}'; expected KEY=VALUE.", file=sys.stderr)
+            return 2
+        key, value = pair.split("=", 1)
+        values[key.strip()] = value
+
+    rendered, missing = templates.render(body, values)
+    if missing:
+        print(
+            "Missing value(s) for: " + ", ".join("$" + name for name in missing)
+            + ". Pass them with --var NAME=VALUE.",
+            file=sys.stderr,
+        )
+        return 2
+    print(rendered)
+    return 0
+
+
 def _load_result(path: str, label: str):
     """Read one verification result written with --output-format json."""
     try:
@@ -873,6 +935,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         cmd_batch(args)
     elif args.command == "history":
         return _cmd_history(args)
+    elif args.command in ("template", "prompt"):
+        return _cmd_template(args)
     elif args.command in ("compare", "diff"):
         return _cmd_compare(args)
     elif args.command == "stats":
