@@ -75,6 +75,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Disable claim verification cache",
     )
     verify.add_argument(
+        "--cache-ttl", type=float, default=None, metavar="SECONDS",
+        help="Expire cached verifications after SECONDS (default: never)",
+    )
+    verify.add_argument(
         "--max-tokens", type=int, default=None,
         help="Maximum tokens for the LLM response",
     )
@@ -147,6 +151,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Disable claim verification cache",
     )
     batch.add_argument(
+        "--cache-ttl", type=float, default=None, metavar="SECONDS",
+        help="Expire cached verifications after SECONDS (default: never)",
+    )
+    batch.add_argument(
         "--delay", type=float, default=0.0,
         help="Delay in seconds between items (to avoid rate limits)",
     )
@@ -199,6 +207,7 @@ def cmd_verify(args: argparse.Namespace) -> None:
         strictness=args.strictness,
         tools=tools or None,
         cache_size=0 if args.no_cache else 256,
+        cache_ttl=getattr(args, "cache_ttl", None),
     )
 
     result = hallu.generate(model=args.model, prompt=prompt)
@@ -340,6 +349,7 @@ def cmd_batch(args: argparse.Namespace) -> None:
         strictness=args.strictness,
         tools=tools or None,
         cache_size=0 if args.no_cache else 256,
+        cache_ttl=getattr(args, "cache_ttl", None),
     )
 
     # Read input
