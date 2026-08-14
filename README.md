@@ -1,4 +1,4 @@
-# Self-Correct Agent — Chain-of-Verification for Python
+# Self-Correct Agent â€” Chain-of-Verification for Python
 
 [![Tests](https://github.com/Muhtasim-Munif-Fahim/self-correct-agent/actions/workflows/tests.yml/badge.svg)](https://github.com/Muhtasim-Munif-Fahim/self-correct-agent/actions)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
@@ -38,9 +38,9 @@ This package turns that failure mode into a repeatable maintenance step:
 - 4-phase Chain-of-Verification pipeline: draft, extract, critique, correct.
 - OpenAI-compatible client support through `client.chat.completions.create()`.
 - Pluggable verification **Tool** interface with three built-in backends:
-  - `DuckDuckGoSearchTool` — web search (default)
-  - `WikipediaSearchTool` — Wikipedia article summaries
-  - `StaticKnowledgeTool` — user-provided knowledge base (dict, JSON file, or URL)
+  - `DuckDuckGoSearchTool` â€” web search (default)
+  - `WikipediaSearchTool` â€” Wikipedia article summaries
+  - `StaticKnowledgeTool` â€” user-provided knowledge base (dict, JSON file, or URL)
 - Async claim verification for faster checks on long drafts.
 - Thread-safe LRU cache for repeated claim verification.
 - Token usage tracking and simple cost estimation.
@@ -261,10 +261,10 @@ The CI workflow also runs the demo script so the repository keeps a working exam
 
 ## Release Notes
 
-- **v0.2.2** — tools, models, and history subcommands; CSV output format.
-- **v0.2.1** — --quiet flag, --verbose flag.
-- **v0.2.0** — WikipediaSearchTool, StaticKnowledgeTool, CLI, batch mode, report exports.
-- **v0.1.0** — Initial release: CoVe pipeline, DuckDuckGo tool, async, cache.
+- **v0.2.2** â€” tools, models, and history subcommands; CSV output format.
+- **v0.2.1** â€” --quiet flag, --verbose flag.
+- **v0.2.0** â€” WikipediaSearchTool, StaticKnowledgeTool, CLI, batch mode, report exports.
+- **v0.1.0** â€” Initial release: CoVe pipeline, DuckDuckGo tool, async, cache.
 
 ## References
 

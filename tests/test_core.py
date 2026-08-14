@@ -468,3 +468,60 @@ def test_generate_async_parallel_verification() -> None:
     assert mock_client.chat.completions.create.call_count == 4
     assert len(result.verification_log) == 2
     assert all(r["is_valid"] for r in result.verification_log)
+
+
+class TestClaimCacheTTL:
+    """The claim cache may expire entries after a configurable interval."""
+
+    def test_entry_survives_within_ttl(self):
+        from self_correct.core import _ClaimCache
+
+        cache = _ClaimCache(max_size=8, ttl=30.0)
+        cache.put("the sky is blue", {"valid": True})
+        assert cache.get("the sky is blue") == {"valid": True}
+
+    def test_entry_expires_after_ttl(self):
+        import time
+
+        from self_correct.core import _ClaimCache
+
+        cache = _ClaimCache(max_size=8, ttl=0.05)
+        cache.put("the sky is blue", {"valid": True})
+        time.sleep(0.1)
+        assert cache.get("the sky is blue") is None
+
+    def test_no_ttl_means_no_expiry(self):
+        from self_correct.core import _ClaimCache
+
+        cache = _ClaimCache(max_size=8, ttl=None)
+        cache.put("the sky is blue", {"valid": True})
+        assert cache.ttl is None
+        assert cache.get("the sky is blue") == {"valid": True}
+
+    def test_lru_eviction_still_applies(self):
+        from self_correct.core import _ClaimCache
+
+        cache = _ClaimCache(max_size=2)
+        for claim in ("a", "b", "c"):
+            cache.put(claim, {"claim": claim})
+        assert cache.get("a") is None
+        assert cache.get("c") == {"claim": "c"}
+
+    def test_stats_track_hits_misses_and_expirations(self):
+        import time
+
+        from self_correct.core import _ClaimCache
+
+        cache = _ClaimCache(max_size=8, ttl=0.05)
+        cache.put("x", {"valid": True})
+        cache.get("x")            # hit
+        cache.get("absent")       # miss
+        time.sleep(0.1)
+        cache.get("x")            # expired -> miss
+
+        stats = cache.stats()
+        assert stats["hits"] == 1
+        assert stats["misses"] == 2
+        assert stats["expirations"] == 1
+        assert stats["ttl_seconds"] == 0.05
+        assert 0.0 < stats["hit_rate"] < 1.0

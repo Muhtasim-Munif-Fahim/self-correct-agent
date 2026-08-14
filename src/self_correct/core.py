@@ -1,4 +1,4 @@
-﻿"""Core module for self-correct-agent: Chain-of-Verification anti-hallucination wrapper.
+"""Core module for self-correct-agent: Chain-of-Verification anti-hallucination wrapper.
 
 This library implements the Chain-of-Verification (CoVe) methodology
 described by Dhuliawala et al. (2023) [1] for reducing hallucinations
@@ -176,33 +176,79 @@ class AntiHallucinationResponse:
 class _ClaimCache:
     """Thread-safe LRU cache for verified claims."""
 
-    def __init__(self, max_size: int = 256) -> None:
+    def __init__(self, max_size: int = 256, ttl: Optional[float] = None) -> None:
         self._cache: OrderedDict[str, Dict[str, Any]] = OrderedDict()
+        self._stored_at: Dict[str, float] = {}
         self._max_size = max_size
+        #: Seconds an entry stays valid. None means entries never expire.
+        self._ttl = ttl
         self._lock = threading.Lock()
+        self._hits = 0
+        self._misses = 0
+        self._expirations = 0
+        self._evictions = 0
 
     @staticmethod
     def _key(claim: str) -> str:
         """Hash the claim text to create a cache key."""
         return hashlib.sha256(claim.strip().lower().encode()).hexdigest()[:16]
 
+    def _is_expired(self, key: str, now: float) -> bool:
+        if self._ttl is None:
+            return False
+        return (now - self._stored_at.get(key, 0.0)) >= self._ttl
+
     def get(self, claim: str) -> Optional[Dict[str, Any]]:
-        """Return cached result or None."""
+        """Return a cached result, or None if absent or expired."""
         key = self._key(claim)
+        now = time.time()
         with self._lock:
-            if key in self._cache:
-                self._cache.move_to_end(key)
-                return self._cache[key]
-        return None
+            if key not in self._cache:
+                self._misses += 1
+                return None
+            if self._is_expired(key, now):
+                # A stale answer is worse than no answer: verification results
+                # describe the world, and the world moves.
+                del self._cache[key]
+                self._stored_at.pop(key, None)
+                self._expirations += 1
+                self._misses += 1
+                return None
+            self._cache.move_to_end(key)
+            self._hits += 1
+            return self._cache[key]
 
     def put(self, claim: str, result: Dict[str, Any]) -> None:
         """Store a verification result."""
         key = self._key(claim)
         with self._lock:
             self._cache[key] = result
+            self._stored_at[key] = time.time()
             self._cache.move_to_end(key)
             if len(self._cache) > self._max_size:
-                self._cache.popitem(last=False)
+                evicted, _ = self._cache.popitem(last=False)
+                self._stored_at.pop(evicted, None)
+                self._evictions += 1
+
+    @property
+    def ttl(self) -> Optional[float]:
+        """Seconds an entry stays valid, or None when entries never expire."""
+        return self._ttl
+
+    def stats(self) -> Dict[str, Any]:
+        """Counters describing how the cache has behaved this session."""
+        with self._lock:
+            looked_up = self._hits + self._misses
+            return {
+                "size": len(self._cache),
+                "max_size": self._max_size,
+                "ttl_seconds": self._ttl,
+                "hits": self._hits,
+                "misses": self._misses,
+                "hit_rate": (self._hits / looked_up) if looked_up else 0.0,
+                "expirations": self._expirations,
+                "evictions": self._evictions,
+            }
 
     @property
     def size(self) -> int:
@@ -256,6 +302,7 @@ class AntiHallucinator:
         strictness: float = 1.0,
         tools: Optional[List[Any]] = None,
         cache_size: int = 256,
+        cache_ttl: Optional[float] = None,
         draft_system_prompt: str = "You are a helpful assistant.",
         extraction_prompt: str = _EXTRACTION_PROMPT,
         critique_prompt: Optional[str] = None,
@@ -283,7 +330,7 @@ class AntiHallucinator:
         self.client = client
         self.strictness = max(0.0, min(1.0, strictness))
         self.tools = tools or []
-        self._cache = _ClaimCache(max_size=cache_size)
+        self._cache = _ClaimCache(max_size=cache_size, ttl=cache_ttl)
         self._draft_system_prompt = draft_system_prompt
         self._extraction_prompt = extraction_prompt
         self._critique_prompt = critique_prompt
