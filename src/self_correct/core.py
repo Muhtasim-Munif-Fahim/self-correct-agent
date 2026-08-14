@@ -25,6 +25,37 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+#: Published USD rates per 1,000,000 tokens, as (prompt, completion).
+#: Approximate; providers change these, so treat them as an estimate.
+MODEL_PRICING = {
+    "gpt-4o-mini": (0.15, 0.60),
+    "gpt-4o": (2.50, 10.00),
+    "gpt-4-turbo": (10.00, 30.00),
+    "gpt-4": (30.00, 60.00),
+    "gpt-3.5-turbo": (0.50, 1.50),
+}
+
+
+def model_pricing(model: str) -> Optional[tuple]:
+    """Return (prompt, completion) rates per 1M tokens for ``model``.
+
+    Deployed model names usually carry a dated or versioned suffix, such as
+    "gpt-4o-mini-2024-07-18", so an exact match is tried first and then the
+    longest matching known prefix. "gpt-4-turbo-preview" therefore resolves to
+    gpt-4-turbo rather than to gpt-4.
+
+    Returns None when nothing matches. Callers must report that as unknown
+    rather than substituting a default: quoting one model's rates for another
+    is worse than admitting the rate isn't known.
+    """
+
+    if model in MODEL_PRICING:
+        return MODEL_PRICING[model]
+    candidates = [name for name in MODEL_PRICING if model.startswith(name)]
+    if not candidates:
+        return None
+    return MODEL_PRICING[max(candidates, key=len)]
+
 
 # ------------------------------------------------------------------
 # Data classes
@@ -49,6 +80,23 @@ class TokenUsage:
         with self._lock:
             self.prompt_tokens += prompt_tokens
             self.completion_tokens += completion_tokens
+
+    def estimate_cost_for_model(self, model: str) -> Optional[float]:
+        """Estimate cost in USD using the published rates for ``model``.
+
+        Returns None for a model with no entry in MODEL_PRICING, so callers can
+        say "unknown" rather than quoting a number derived from the wrong
+        model's rates.
+        """
+
+        rates = model_pricing(model)
+        if rates is None:
+            return None
+        prompt_per_1m, completion_per_1m = rates
+        return (
+            (self.prompt_tokens / 1_000_000) * prompt_per_1m
+            + (self.completion_tokens / 1_000_000) * completion_per_1m
+        )
 
     def estimate_cost(
         self,

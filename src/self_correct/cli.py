@@ -17,7 +17,7 @@ import time
 from typing import Optional
 
 from . import history
-from .core import AntiHallucinator
+from .core import MODEL_PRICING, AntiHallucinator, model_pricing
 from .tools import DuckDuckGoSearchTool, WikipediaSearchTool
 
 
@@ -153,7 +153,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # batch subcommand
     batch = sub.add_parser("batch", help="Process multiple prompts from a JSONL file")
     batch.add_argument(
-        "--input", "-i", required=True,
+        "--input", "-i", default=None,
         help="Input JSONL file (each line: {\"id\": \"...\", \"prompt\": \"...\"})",
     )
     batch.add_argument(
@@ -197,6 +197,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--format", choices=["json", "jsonl"], default="jsonl",
         help="Output format (default: jsonl)",
     )
+    batch.add_argument(
+        "--schema", action="store_true",
+        help="Print the output record schema and exit without processing",
+    )
 
     return parser
 
@@ -221,6 +225,18 @@ def _detect_output_format(output_path: Optional[str], format_override: Optional[
         if output_path.endswith(".md"):
             return "markdown"
     return "text"
+
+
+def _format_cost(usage: object, model: str) -> str:
+    """Render an estimated USD cost, or say plainly that it is unknown."""
+
+    estimate = getattr(usage, "estimate_cost_for_model", None)
+    cost = estimate(model) if callable(estimate) else None
+    if cost is None:
+        return f"unknown (no published rate for '{model}')"
+    # Sub-cent runs are the norm here, so a two-decimal figure would read $0.00
+    # for every run and tell the user nothing.
+    return f"${cost:.4f}" if cost < 0.01 else f"${cost:.2f}"
 
 
 def _print_dry_run_plan(
@@ -361,7 +377,10 @@ def cmd_verify(args: argparse.Namespace) -> None:
             "SELF-CORRECT AGENT - VERIFICATION REPORT",
             "=" * 60,
             "",
-            f"Tokens: {result.token_usage.total_tokens}",
+            f"Tokens: {result.token_usage.total_tokens}"
+            f" (prompt {result.token_usage.prompt_tokens},"
+            f" completion {result.token_usage.completion_tokens})",
+            f"Estimated cost: {_format_cost(result.token_usage, args.model)}",
             f"Duration: {result.elapsed_seconds:.2f}s",
             f"Hallucinations caught: {len(result.hallucinations_caught)}",
             "",
@@ -419,15 +438,41 @@ def cmd_upgrade() -> None:
     print("Run: pip install --upgrade self-correct-agent")
 
 
+#: Tokens a representative verification run consumes, used to turn per-token
+#: rates into a figure that means something. A Chain-of-Verification run makes
+#: several calls, so completion volume is closer to prompt volume than a single
+#: chat completion would suggest.
+_TYPICAL_RUN_TOKENS = (2000, 800)
+
+
 def cmd_info() -> None:
-    """Show package information."""
+    """Show package information and per-model cost estimates."""
     from . import __version__
+
     info = {
         "package": "self-correct",
         "version": __version__,
         "description": "A lightweight anti-hallucination wrapper for LLMs using Chain-of-Verification.",
     }
     print(json.dumps(info, indent=2))
+
+    prompt_tokens, completion_tokens = _TYPICAL_RUN_TOKENS
+    print()
+    print(
+        f"Estimated cost per verification run "
+        f"(~{prompt_tokens} prompt + {completion_tokens} completion tokens):"
+    )
+    print(f"  {'Model':<20}{'Per run':>12}{'Per 100 runs':>16}")
+    print("  " + "-" * 46)
+    for model, (prompt_rate, completion_rate) in MODEL_PRICING.items():
+        per_run = (
+            (prompt_tokens / 1_000_000) * prompt_rate
+            + (completion_tokens / 1_000_000) * completion_rate
+        )
+        print(f"  {model:<20}{'$' + format(per_run, '.4f'):>12}{'$' + format(per_run * 100, '.2f'):>16}")
+    print()
+    print("  Rates are approximate and set by the provider; a run's real cost")
+    print("  depends on prompt length and how many claims need verifying.")
 
 
 def _cmd_history(args: argparse.Namespace) -> int:
@@ -561,22 +606,57 @@ def _cmd_tools() -> int:
 
 
 def _cmd_models() -> int:
-    models = [
-        ("gpt-4o-mini", "$0.15", "$0.60"),
-        ("gpt-4o", "$2.50", "$10.00"),
-        ("gpt-4-turbo", "$10.00", "$30.00"),
-        ("gpt-3.5-turbo", "$0.50", "$1.50"),
-    ]
     print(f"{'Model':<25} {'Input/1M':<15} {'Output/1M':<15}")
     print("-" * 55)
-    for name, inp, out in models:
-        print(f"{name:<25} {inp:<15} {out:<15}")
-    print("\n* Prices per 1M tokens, approximate. Check provider for current pricing.")
+    for name, (prompt_rate, completion_rate) in MODEL_PRICING.items():
+        print(f"{name:<25} {'$' + format(prompt_rate, '.2f'):<15} {'$' + format(completion_rate, '.2f'):<15}")
+    print()
+    print("* Prices per 1M tokens, approximate. Check provider for current pricing.")
     return 0
+
+
+#: Fields written for each batch record, as (name, type, description).
+_BATCH_OUTPUT_SCHEMA = [
+    ("id", "string", "Item id from the input, or its 1-based position"),
+    ("prompt", "string", "The prompt as submitted"),
+    ("content", "string", "Final verified text (absent when the item errored)"),
+    ("status", "string", "Verification outcome for the item"),
+    ("hallucinations_caught", "array[string]", "Claims the pipeline rejected"),
+    ("verification_log", "array[object]", "Per-claim record: claim, valid, source"),
+    ("token_usage", "object", "prompt_tokens, completion_tokens, total_tokens"),
+    ("elapsed_seconds", "number", "Wall-clock time for the item"),
+    ("error", "string", "Present only when the item failed; type and message"),
+]
+
+
+def _print_batch_schema(args: argparse.Namespace) -> None:
+    """Describe the records `batch` will write."""
+
+    print(f"Output format: {args.format}")
+    if args.format == "jsonl":
+        print("One JSON object per line, one line per input item.")
+    else:
+        print("A single JSON array of objects, one per input item.")
+    print()
+    print(f"{'Field':<24}{'Type':<18}Description")
+    print("-" * 92)
+    for name, type_name, description in _BATCH_OUTPUT_SCHEMA:
+        print(f"{name:<24}{type_name:<18}{description}")
+    print()
+    print("Every item yields a record. A failed item carries `error` in place of")
+    print("`content`, so the output line count always matches the input.")
 
 
 def cmd_batch(args: argparse.Namespace) -> None:
     """Execute the batch subcommand: process a JSONL file."""
+    if getattr(args, "schema", False):
+        _print_batch_schema(args)
+        return
+
+    # --input is only optional so that --schema can run without one.
+    if not args.input:
+        raise SystemExit("batch: --input is required (or use --schema to see the output fields)")
+
     from openai import OpenAI
 
     tools = []
