@@ -1,4 +1,4 @@
-﻿"""Command-line interface for self-correct-agent.
+"""Command-line interface for self-correct-agent.
 
 Provides batch verification workflows, file-based prompts,
 and configurable output formats.
@@ -374,10 +374,10 @@ def cmd_batch(args: argparse.Namespace) -> None:
         if not getattr(args, "quiet", False):
             print(f"  [{idx}/{total}] Processing '{item_id}'...", file=sys.stderr)
         try:
-    generate_kwargs = {"model": args.model, "prompt": prompt}
-    if args.max_tokens is not None:
-        generate_kwargs["max_tokens"] = args.max_tokens
-    result = hallu.generate(**generate_kwargs)
+            generate_kwargs = {"model": args.model, "prompt": prompt}
+            if args.max_tokens is not None:
+                generate_kwargs["max_tokens"] = args.max_tokens
+            result = hallu.generate(**generate_kwargs)
             result_dict = result.to_dict()
             result_dict["id"] = item_id
             result_dict["prompt"] = prompt
