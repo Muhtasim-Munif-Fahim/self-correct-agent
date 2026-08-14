@@ -88,6 +88,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Abort the run if the API does not respond within SECONDS",
     )
     verify.add_argument(
+        "--provider", choices=["openai", "ollama", "custom"], default="openai",
+        help="Where to send requests (default: openai)",
+    )
+    verify.add_argument(
+        "--base-url", default=None,
+        help="API base URL; required for --provider custom, overrides the default otherwise",
+    )
+    verify.add_argument(
+        "--api-key-env", default=None, metavar="VAR",
+        help="Environment variable holding the API key (default: OPENAI_API_KEY)",
+    )
+    verify.add_argument(
         "--dry-run", action="store_true",
         help="Show what would run without making any API calls",
     )
@@ -224,6 +236,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Output format (default: jsonl)",
     )
     batch.add_argument(
+        "--provider", choices=["openai", "ollama", "custom"], default="openai",
+        help="Where to send requests (default: openai)",
+    )
+    batch.add_argument(
+        "--base-url", default=None,
+        help="API base URL; required for --provider custom, overrides the default otherwise",
+    )
+    batch.add_argument(
+        "--api-key-env", default=None, metavar="VAR",
+        help="Environment variable holding the API key (default: OPENAI_API_KEY)",
+    )
+    batch.add_argument(
         "--schema", action="store_true",
         help="Print the output record schema and exit without processing",
     )
@@ -253,6 +277,55 @@ def _detect_output_format(output_path: Optional[str], format_override: Optional[
     return "text"
 
 
+#: Default endpoint for each provider. `custom` has none by design: it exists
+#: precisely for endpoints this package does not know about.
+PROVIDER_BASE_URLS = {
+    "openai": None,
+    "ollama": "http://localhost:11434/v1",
+    "custom": None,
+}
+
+
+def _build_client(args: argparse.Namespace):
+    """Construct the API client for the selected provider.
+
+    Every supported provider speaks the OpenAI chat-completions protocol, so
+    one client class covers all of them and only the base URL and key differ.
+    That is also what the core requires: it calls
+    `client.chat.completions.create()` and nothing else.
+    """
+
+    import os
+
+    from openai import OpenAI
+
+    provider = getattr(args, "provider", "openai") or "openai"
+    base_url = getattr(args, "base_url", None) or PROVIDER_BASE_URLS.get(provider)
+
+    if provider == "custom" and not base_url:
+        raise SystemExit("--provider custom requires --base-url")
+
+    key_env = getattr(args, "api_key_env", None) or "OPENAI_API_KEY"
+    api_key = os.environ.get(key_env)
+    if not api_key:
+        # A local Ollama server ignores the key but the client insists on one.
+        if provider == "ollama":
+            api_key = "ollama"
+        else:
+            raise SystemExit(
+                f"No API key found in ${key_env}. Set it, or pass --api-key-env "
+                "to name a different variable."
+            )
+
+    kwargs = {"api_key": api_key}
+    if base_url:
+        kwargs["base_url"] = base_url
+    timeout = getattr(args, "timeout", None)
+    if timeout:
+        kwargs["timeout"] = timeout
+    return OpenAI(**kwargs)
+
+
 def _format_cost(usage: object, model: str) -> str:
     """Render an estimated USD cost, or say plainly that it is unknown."""
 
@@ -261,7 +334,11 @@ def _format_cost(usage: object, model: str) -> str:
     if cost is None:
         return f"unknown (no published rate for '{model}')"
     # Sub-cent runs are the norm here, so a two-decimal figure would read $0.00
-    # for every run and tell the user nothing.
+    # for every run and tell the user nothing. Below the smallest figure four
+    # decimals can show, say so rather than printing $0.0000, which reads as
+    # free.
+    if cost > 0 and cost < 0.0001:
+        return "<$0.0001"
     return f"${cost:.4f}" if cost < 0.01 else f"${cost:.2f}"
 
 
@@ -353,7 +430,7 @@ def cmd_verify(args: argparse.Namespace) -> None:
 
     # The timeout belongs on the client so it covers every request the
     # verification pipeline makes, not just the first generation call.
-    client = OpenAI(timeout=args.timeout) if getattr(args, "timeout", None) else OpenAI()
+    client = _build_client(args)
 
     tools = []
     if "duckduckgo" in args.tools:
