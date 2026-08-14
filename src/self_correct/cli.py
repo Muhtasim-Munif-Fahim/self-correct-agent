@@ -16,6 +16,7 @@ import sys
 import time
 from typing import Optional
 
+from . import history
 from .core import AntiHallucinator
 from .tools import DuckDuckGoSearchTool, WikipediaSearchTool
 
@@ -98,7 +99,29 @@ def _build_parser() -> argparse.ArgumentParser:
     models_parser = sub.add_parser("models", help="List supported models with estimated costs")
 
     # history subcommand
-    history_parser = sub.add_parser("history", help="Show recent verification history (current session)")
+    history_parser = sub.add_parser("history", help="Show recent verification runs")
+    history_parser.add_argument(
+        "--limit", "-n", type=int, default=20,
+        help="Number of runs to show, most recent first (default: 20)",
+    )
+    history_parser.add_argument(
+        "--export", default=None, metavar="PATH",
+        help="Write the full history to PATH (.json or .jsonl)",
+    )
+    history_parser.add_argument(
+        "--clear", action="store_true",
+        help="Delete the recorded history",
+    )
+
+    stats_parser = sub.add_parser("stats", help="Aggregate statistics across recorded runs")
+    stats_parser.add_argument(
+        "--json", action="store_true", help="Print the summary as JSON",
+    )
+
+    cache_parser = sub.add_parser("cache", help="Show claim-cache configuration and effectiveness")
+    cache_parser.add_argument(
+        "--json", action="store_true", help="Print the summary as JSON",
+    )
 
     # estimate subcommand
     estimate = sub.add_parser("estimate", help="Estimate token count for a prompt")
@@ -232,6 +255,48 @@ def _print_dry_run_plan(
           + ", and revise the draft.")
 
 
+def _record_verify_run(
+    args: argparse.Namespace,
+    prompt: str,
+    result: object,
+    duration: float,
+    hallu: object,
+) -> None:
+    """Persist one verify run so history, stats and cache can report on it.
+
+    Every field is read defensively: recording is a side benefit and must never
+    be the reason a completed verification fails.
+    """
+
+    entry = {
+        "command": "verify",
+        "model": args.model,
+        "prompt": prompt[:120],
+        "duration": duration,
+        "strictness": args.strictness,
+        "tools": list(args.tools or []),
+    }
+
+    usage = getattr(result, "token_usage", None)
+    if usage is not None:
+        entry["prompt_tokens"] = getattr(usage, "prompt_tokens", 0)
+        entry["completion_tokens"] = getattr(usage, "completion_tokens", 0)
+
+    log = getattr(result, "verification_log", None)
+    if isinstance(log, list):
+        entry["claims"] = len(log)
+        entry["claims_verified"] = sum(1 for item in log if item.get("valid"))
+
+    cache = getattr(hallu, "_cache", None)
+    stats = getattr(cache, "stats", None)
+    if callable(stats):
+        cache_stats = stats()
+        entry["cache_hits"] = cache_stats.get("hits", 0)
+        entry["cache_misses"] = cache_stats.get("misses", 0)
+
+    history.record_run(entry)
+
+
 def cmd_verify(args: argparse.Namespace) -> None:
     """Execute the verify subcommand."""
     from openai import OpenAI
@@ -262,7 +327,19 @@ def cmd_verify(args: argparse.Namespace) -> None:
         cache_ttl=getattr(args, "cache_ttl", None),
     )
 
-    result = hallu.generate(model=args.model, prompt=prompt)
+    started = time.time()
+    try:
+        result = hallu.generate(model=args.model, prompt=prompt)
+    except Exception as exc:
+        history.record_run({
+            "command": "verify",
+            "model": args.model,
+            "prompt": prompt[:120],
+            "duration": time.time() - started,
+            "error": f"{type(exc).__name__}: {exc}",
+        })
+        raise
+    _record_verify_run(args, prompt, result, time.time() - started, hallu)
 
     output_format = _detect_output_format(args.output, args.output_format)
 
@@ -353,8 +430,120 @@ def cmd_info() -> None:
     print(json.dumps(info, indent=2))
 
 
-def _cmd_history() -> int:
-    print("History tracking is not yet implemented.")
+def _cmd_history(args: argparse.Namespace) -> int:
+    """Show, export or clear the recorded run history."""
+    path = history.history_path()
+
+    if args.clear:
+        try:
+            path.unlink()
+            print(f"Cleared history at {path}")
+        except FileNotFoundError:
+            print("No history to clear.")
+        except OSError as exc:
+            print(f"Could not clear history: {exc}", file=sys.stderr)
+            return 2
+        return 0
+
+    runs = history.load_runs()
+    if not runs:
+        print(f"No runs recorded yet. History is written to {path}")
+        return 0
+
+    if args.export:
+        try:
+            with open(args.export, "w", encoding="utf-8") as handle:
+                if args.export.endswith(".json"):
+                    json.dump(runs, handle, indent=2, default=str)
+                else:
+                    for run in runs:
+                        handle.write(json.dumps(run, default=str) + "\n")
+        except OSError as exc:
+            print(f"Could not write '{args.export}': {exc}", file=sys.stderr)
+            return 2
+        print(f"Exported {len(runs)} run(s) to {args.export}")
+        return 0
+
+    recent = runs[-args.limit:][::-1]
+    print(f"{'When':<20}{'Model':<16}{'Claims':>8}{'Verified':>10}{'Secs':>8}  Prompt")
+    print("-" * 92)
+    for run in recent:
+        when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(run.get("timestamp", 0))))
+        claims = run.get("claims", "-")
+        verified = run.get("claims_verified", "-")
+        duration = run.get("duration")
+        secs = f"{float(duration):.1f}" if duration is not None else "-"
+        preview = str(run.get("prompt", ""))[:34]
+        marker = "  [error]" if run.get("error") else ""
+        print(f"{when:<20}{str(run.get('model','?')):<16}{claims:>8}{verified:>10}{secs:>8}  {preview}{marker}")
+    print()
+    print(f"{len(runs)} run(s) recorded at {path}")
+    return 0
+
+
+def _cmd_stats(args: argparse.Namespace) -> int:
+    """Aggregate statistics across every recorded run."""
+    summary = history.aggregate(history.load_runs())
+
+    if args.json:
+        print(json.dumps(summary, indent=2, default=str))
+        return 0
+
+    if not summary.get("runs"):
+        print("No runs recorded yet.")
+        return 0
+
+    def _row(label: str, value: object) -> None:
+        print(f"{label:<26}{value}")
+
+    _row("Runs", summary["runs"])
+    _row("Runs with errors", summary["errors"])
+    _row("First run", time.strftime("%Y-%m-%d %H:%M", time.localtime(summary["first"])))
+    _row("Last run", time.strftime("%Y-%m-%d %H:%M", time.localtime(summary["last"])))
+    print()
+    _row("Claims extracted", summary["claims"])
+    _row("Claims verified", f"{summary['claims_verified']} ({summary['verified_rate']:.1%})")
+    print()
+    _row("Prompt tokens", f"{summary['prompt_tokens']:,}")
+    _row("Completion tokens", f"{summary['completion_tokens']:,}")
+    _row("Total time", f"{summary['total_duration']:.1f}s")
+    _row("Mean per run", f"{summary['mean_duration']:.1f}s")
+    print()
+    print("Models used")
+    for model, count in summary["models"].items():
+        print(f"  {model:<24}{count}")
+    return 0
+
+
+def _cmd_cache(args: argparse.Namespace) -> int:
+    """Report claim-cache effectiveness across recorded runs."""
+    summary = history.aggregate(history.load_runs())
+    hits = summary.get("cache_hits", 0)
+    misses = summary.get("cache_misses", 0)
+    looked_up = hits + misses
+    payload = {
+        "runs": summary.get("runs", 0),
+        "hits": hits,
+        "misses": misses,
+        "hit_rate": (hits / looked_up) if looked_up else 0.0,
+        "lookups": looked_up,
+    }
+
+    if args.json:
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    print("The claim cache lives in memory for the duration of a run, so these")
+    print("figures are accumulated from recorded runs rather than read live.")
+    print("-" * 62)
+    print(f"{'Runs recorded':<22}{payload['runs']}")
+    print(f"{'Claim lookups':<22}{payload['lookups']}")
+    print(f"{'Hits':<22}{payload['hits']}")
+    print(f"{'Misses':<22}{payload['misses']}")
+    print(f"{'Hit rate':<22}{payload['hit_rate']:.1%}")
+    if not payload["lookups"]:
+        print()
+        print("No lookups recorded yet - run `self-correct verify` first.")
     return 0
 
 
@@ -516,7 +705,11 @@ def main(argv: Optional[list[str]] = None) -> None:
     elif args.command == "batch":
         cmd_batch(args)
     elif args.command == "history":
-        return _cmd_history()
+        return _cmd_history(args)
+    elif args.command == "stats":
+        return _cmd_stats(args)
+    elif args.command == "cache":
+        return _cmd_cache(args)
     elif args.command == "info":
         cmd_info()
     elif args.command == "estimate":
