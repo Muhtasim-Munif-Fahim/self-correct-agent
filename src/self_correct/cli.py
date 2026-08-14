@@ -153,7 +153,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # batch subcommand
     batch = sub.add_parser("batch", help="Process multiple prompts from a JSONL file")
     batch.add_argument(
-        "--input", "-i", required=True,
+        "--input", "-i", default=None,
         help="Input JSONL file (each line: {\"id\": \"...\", \"prompt\": \"...\"})",
     )
     batch.add_argument(
@@ -196,6 +196,10 @@ def _build_parser() -> argparse.ArgumentParser:
     batch.add_argument(
         "--format", choices=["json", "jsonl"], default="jsonl",
         help="Output format (default: jsonl)",
+    )
+    batch.add_argument(
+        "--schema", action="store_true",
+        help="Print the output record schema and exit without processing",
     )
 
     return parser
@@ -611,8 +615,48 @@ def _cmd_models() -> int:
     return 0
 
 
+#: Fields written for each batch record, as (name, type, description).
+_BATCH_OUTPUT_SCHEMA = [
+    ("id", "string", "Item id from the input, or its 1-based position"),
+    ("prompt", "string", "The prompt as submitted"),
+    ("content", "string", "Final verified text (absent when the item errored)"),
+    ("status", "string", "Verification outcome for the item"),
+    ("hallucinations_caught", "array[string]", "Claims the pipeline rejected"),
+    ("verification_log", "array[object]", "Per-claim record: claim, valid, source"),
+    ("token_usage", "object", "prompt_tokens, completion_tokens, total_tokens"),
+    ("elapsed_seconds", "number", "Wall-clock time for the item"),
+    ("error", "string", "Present only when the item failed; type and message"),
+]
+
+
+def _print_batch_schema(args: argparse.Namespace) -> None:
+    """Describe the records `batch` will write."""
+
+    print(f"Output format: {args.format}")
+    if args.format == "jsonl":
+        print("One JSON object per line, one line per input item.")
+    else:
+        print("A single JSON array of objects, one per input item.")
+    print()
+    print(f"{'Field':<24}{'Type':<18}Description")
+    print("-" * 92)
+    for name, type_name, description in _BATCH_OUTPUT_SCHEMA:
+        print(f"{name:<24}{type_name:<18}{description}")
+    print()
+    print("Every item yields a record. A failed item carries `error` in place of")
+    print("`content`, so the output line count always matches the input.")
+
+
 def cmd_batch(args: argparse.Namespace) -> None:
     """Execute the batch subcommand: process a JSONL file."""
+    if getattr(args, "schema", False):
+        _print_batch_schema(args)
+        return
+
+    # --input is only optional so that --schema can run without one.
+    if not args.input:
+        raise SystemExit("batch: --input is required (or use --schema to see the output fields)")
+
     from openai import OpenAI
 
     tools = []
