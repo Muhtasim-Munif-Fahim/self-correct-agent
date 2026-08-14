@@ -525,3 +525,40 @@ class TestClaimCacheTTL:
         assert stats["expirations"] == 1
         assert stats["ttl_seconds"] == 0.05
         assert 0.0 < stats["hit_rate"] < 1.0
+
+
+class TestModelPricing:
+    def test_exact_match(self):
+        from self_correct.core import model_pricing
+
+        assert model_pricing("gpt-4o-mini") == (0.15, 0.60)
+
+    def test_dated_suffix_resolves_to_base_model(self):
+        from self_correct.core import model_pricing
+
+        assert model_pricing("gpt-4o-mini-2024-07-18") == model_pricing("gpt-4o-mini")
+
+    def test_longest_prefix_wins(self):
+        """gpt-4-turbo-preview must not be priced as gpt-4."""
+        from self_correct.core import model_pricing
+
+        assert model_pricing("gpt-4-turbo-preview") == model_pricing("gpt-4-turbo")
+        assert model_pricing("gpt-4-turbo-preview") != model_pricing("gpt-4")
+
+    def test_unknown_model_returns_none(self):
+        from self_correct.core import model_pricing
+
+        assert model_pricing("llama-3-70b") is None
+
+    def test_cost_uses_the_models_own_rates(self):
+        from self_correct.core import TokenUsage
+
+        usage = TokenUsage(prompt_tokens=1_000_000, completion_tokens=1_000_000)
+        assert usage.estimate_cost_for_model("gpt-4o-mini") == 0.15 + 0.60
+
+    def test_cost_is_none_for_unpriced_model(self):
+        """Better to report unknown than to quote another model's rates."""
+        from self_correct.core import TokenUsage
+
+        usage = TokenUsage(prompt_tokens=1000, completion_tokens=1000)
+        assert usage.estimate_cost_for_model("llama-3-70b") is None
