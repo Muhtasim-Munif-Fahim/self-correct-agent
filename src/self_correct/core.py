@@ -1,4 +1,4 @@
-﻿"""Core module for self-correct-agent: Chain-of-Verification anti-hallucination wrapper.
+"""Core module for self-correct-agent: Chain-of-Verification anti-hallucination wrapper.
 
 This library implements the Chain-of-Verification (CoVe) methodology
 described by Dhuliawala et al. (2023) [1] for reducing hallucinations
