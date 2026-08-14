@@ -16,7 +16,7 @@ import sys
 import time
 from typing import Optional
 
-from . import history
+from . import history, templates
 from .core import MODEL_PRICING, AntiHallucinator, model_pricing
 from .tools import DuckDuckGoSearchTool, WikipediaSearchTool
 
@@ -121,6 +121,32 @@ def _build_parser() -> argparse.ArgumentParser:
     cache_parser = sub.add_parser("cache", help="Show claim-cache configuration and effectiveness")
     cache_parser.add_argument(
         "--json", action="store_true", help="Print the summary as JSON",
+    )
+
+    compare_parser = sub.add_parser(
+        "compare", aliases=["diff"],
+        help="Compare two verification results saved with --output-format json",
+    )
+    compare_parser.add_argument("baseline", help="Earlier result JSON")
+    compare_parser.add_argument("current", help="Later result JSON")
+    compare_parser.add_argument(
+        "--model", default=None,
+        help="Model to price token differences with (default: read from the results)",
+    )
+
+    template_parser = sub.add_parser(
+        "template", aliases=["prompt"],
+        help="List, show and render built-in and user prompt templates",
+    )
+    template_sub = template_parser.add_subparsers(dest="template_command", required=True)
+    template_sub.add_parser("list", help="List available templates")
+    template_show = template_sub.add_parser("show", help="Print a template body")
+    template_show.add_argument("name", help="Template name")
+    template_render = template_sub.add_parser("render", help="Fill a template's placeholders")
+    template_render.add_argument("name", help="Template name")
+    template_render.add_argument(
+        "--var", action="append", default=[], metavar="KEY=VALUE",
+        help="Value for a placeholder; repeatable",
     )
 
     # estimate subcommand
@@ -526,6 +552,129 @@ def _cmd_history(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_template(args: argparse.Namespace) -> int:
+    """List, show or render a prompt template."""
+    if args.template_command == "list":
+        rows = templates.list_templates()
+        print(f"{'Name':<24}{'Source':<26}Description")
+        print("-" * 92)
+        for name, source, description in rows:
+            print(f"{name:<24}{source:<26}{description}")
+        print()
+        print(f"User templates are read from {templates.template_dir()}")
+        print("Add a .txt file there to define one; a matching name overrides a built-in.")
+        return 0
+
+    body = templates.get_template(args.name)
+    if body is None:
+        available = ", ".join(name for name, _, _ in templates.list_templates())
+        print(f"No template named '{args.name}'. Available: {available}", file=sys.stderr)
+        return 2
+
+    if args.template_command == "show":
+        expected = templates.placeholders(body)
+        print(body)
+        if expected:
+            print()
+            print(f"Placeholders: {', '.join('$' + name for name in expected)}")
+        return 0
+
+    values = {}
+    for pair in args.var:
+        if "=" not in pair:
+            print(f"Invalid --var '{pair}'; expected KEY=VALUE.", file=sys.stderr)
+            return 2
+        key, value = pair.split("=", 1)
+        values[key.strip()] = value
+
+    rendered, missing = templates.render(body, values)
+    if missing:
+        print(
+            "Missing value(s) for: " + ", ".join("$" + name for name in missing)
+            + ". Pass them with --var NAME=VALUE.",
+            file=sys.stderr,
+        )
+        return 2
+    print(rendered)
+    return 0
+
+
+def _load_result(path: str, label: str):
+    """Read one verification result written with --output-format json."""
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return json.load(handle), None
+    except OSError as exc:
+        return None, f"Cannot read {label} result '{path}': {exc}"
+    except json.JSONDecodeError as exc:
+        return None, (
+            f"{label.capitalize()} result '{path}' is not valid JSON: {exc}. "
+            "Results come from `verify --output-format json`."
+        )
+
+
+def _cmd_compare(args: argparse.Namespace) -> int:
+    """Compare two verification results side by side."""
+    before, error = _load_result(args.baseline, "baseline")
+    if error:
+        print(error, file=sys.stderr)
+        return 2
+    after, error = _load_result(args.current, "current")
+    if error:
+        print(error, file=sys.stderr)
+        return 2
+
+    def _tokens(result, key):
+        usage = result.get("token_usage") or {}
+        return int(usage.get(key, 0) or 0)
+
+    model = args.model or after.get("model") or before.get("model") or "gpt-4o-mini"
+
+    print(f"{'Field':<24}{'baseline':>14}{'current':>14}{'change':>12}")
+    print("-" * 64)
+    print(f"{'status':<24}{str(before.get('status','?')):>14}{str(after.get('status','?')):>14}{'':>12}")
+
+    for label, key in (("prompt tokens", "prompt_tokens"),
+                       ("completion tokens", "completion_tokens"),
+                       ("total tokens", "total_tokens")):
+        old, new = _tokens(before, key), _tokens(after, key)
+        print(f"{label:<24}{old:>14}{new:>14}{new - old:>+12}")
+
+    rates = model_pricing(model)
+    if rates:
+        prompt_rate, completion_rate = rates
+        def _cost(result):
+            return ((_tokens(result, "prompt_tokens") / 1_000_000) * prompt_rate
+                    + (_tokens(result, "completion_tokens") / 1_000_000) * completion_rate)
+        old_cost, new_cost = _cost(before), _cost(after)
+        print(f"{'est. cost (' + model + ')':<24}"
+              f"{'$' + format(old_cost, '.4f'):>14}{'$' + format(new_cost, '.4f'):>14}"
+              f"{'$' + format(new_cost - old_cost, '+.4f'):>12}")
+
+    old_flags = {str(x) for x in (before.get("hallucinations_caught") or [])}
+    new_flags = {str(x) for x in (after.get("hallucinations_caught") or [])}
+    print(f"{'flagged claims':<24}{len(old_flags):>14}{len(new_flags):>14}{len(new_flags) - len(old_flags):>+12}")
+
+    added, resolved = sorted(new_flags - old_flags), sorted(old_flags - new_flags)
+    if added or resolved:
+        print()
+        print("Flagged-claim changes:")
+        for claim in added:
+            print(f"  + {claim[:88]}")
+        for claim in resolved:
+            print(f"  - {claim[:88]}")
+
+    old_text = str(before.get("content", ""))
+    new_text = str(after.get("content", ""))
+    print()
+    if old_text == new_text:
+        print("Final output: identical")
+    else:
+        print(f"Final output: differs ({len(old_text)} -> {len(new_text)} chars)")
+
+    return 0
+
+
 def _cmd_stats(args: argparse.Namespace) -> int:
     """Aggregate statistics across every recorded run."""
     summary = history.aggregate(history.load_runs())
@@ -786,6 +935,10 @@ def main(argv: Optional[list[str]] = None) -> None:
         cmd_batch(args)
     elif args.command == "history":
         return _cmd_history(args)
+    elif args.command in ("template", "prompt"):
+        return _cmd_template(args)
+    elif args.command in ("compare", "diff"):
+        return _cmd_compare(args)
     elif args.command == "stats":
         return _cmd_stats(args)
     elif args.command == "cache":
