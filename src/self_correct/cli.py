@@ -45,7 +45,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Prompt text to process",
     )
     verify.add_argument(
-        "--file", "-f", default=None,
+        "--file", "--prompt-file", "-f", default=None,
         help="Read prompt from file instead of --prompt",
     )
     verify.add_argument(
@@ -81,6 +81,14 @@ def _build_parser() -> argparse.ArgumentParser:
     verify.add_argument(
         "--max-tokens", type=int, default=None,
         help="Maximum tokens for the LLM response",
+    )
+    verify.add_argument(
+        "--timeout", type=float, default=None, metavar="SECONDS",
+        help="Abort the run if the API does not respond within SECONDS",
+    )
+    verify.add_argument(
+        "--dry-run", action="store_true",
+        help="Show what would run without making any API calls",
     )
 
     # tools subcommand
@@ -155,6 +163,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Expire cached verifications after SECONDS (default: never)",
     )
     batch.add_argument(
+        "--timeout", type=float, default=None, metavar="SECONDS",
+        help="Abort the run if the API does not respond within SECONDS",
+    )
+    batch.add_argument(
         "--delay", type=float, default=0.0,
         help="Delay in seconds between items (to avoid rate limits)",
     )
@@ -188,13 +200,53 @@ def _detect_output_format(output_path: Optional[str], format_override: Optional[
     return "text"
 
 
+def _print_dry_run_plan(
+    args: argparse.Namespace, prompt: str, tool_names: list) -> None:
+    """Describe the run that --dry-run is standing in for.
+
+    Nothing here touches the network, so it works without an API key and
+    without spending anything — the point is to confirm the prompt, model and
+    tools are what you meant before paying for a real run.
+    """
+
+    preview = prompt if len(prompt) <= 200 else prompt[:200] + "..."
+    est_tokens = max(1, len(prompt) // 4)
+
+    print("DRY RUN - no API calls will be made")
+    print("-" * 58)
+    print(f"{'Model':<18}{args.model}")
+    print(f"{'Strictness':<18}{args.strictness}")
+    print(f"{'Tools':<18}{', '.join(tool_names) if tool_names else 'none'}")
+    print(f"{'Cache':<18}{'disabled' if args.no_cache else 'enabled'}"
+          + (f" (ttl {args.cache_ttl}s)" if getattr(args, "cache_ttl", None) else ""))
+    print(f"{'Max tokens':<18}{args.max_tokens if args.max_tokens is not None else 'model default'}")
+    print(f"{'Timeout':<18}{f'{args.timeout}s' if getattr(args, 'timeout', None) else 'none'}")
+    print(f"{'Output':<18}{args.output or 'stdout'}"
+          f" ({_detect_output_format(args.output, args.output_format)})")
+    print()
+    print(f"Prompt ({len(prompt)} chars, ~{est_tokens} tokens):")
+    print(f"  {preview}")
+    print()
+    print("Would then: generate a draft, extract claims, verify each one"
+          + (" using the tools above" if tool_names else " against the model")
+          + ", and revise the draft.")
+
+
 def cmd_verify(args: argparse.Namespace) -> None:
     """Execute the verify subcommand."""
     from openai import OpenAI
 
     prompt = _read_prompt(args.prompt, args.file)
 
-    client = OpenAI()
+    tool_names = [name for name in ("duckduckgo", "wikipedia") if name in args.tools]
+
+    if getattr(args, "dry_run", False):
+        _print_dry_run_plan(args, prompt, tool_names)
+        return
+
+    # The timeout belongs on the client so it covers every request the
+    # verification pipeline makes, not just the first generation call.
+    client = OpenAI(timeout=args.timeout) if getattr(args, "timeout", None) else OpenAI()
 
     tools = []
     if "duckduckgo" in args.tools:
