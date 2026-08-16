@@ -16,7 +16,7 @@ import sys
 import time
 from typing import Optional
 
-from . import history, templates
+from . import history, sessions, templates
 from .core import MODEL_PRICING, AntiHallucinator, model_pricing
 from .tools import DuckDuckGoSearchTool, WikipediaSearchTool
 
@@ -102,6 +102,51 @@ def _build_parser() -> argparse.ArgumentParser:
     verify.add_argument(
         "--dry-run", action="store_true",
         help="Show what would run without making any API calls",
+    )
+    verify.add_argument(
+        "--save-session",
+        default=None,
+        metavar="PATH",
+        help="Save the prompt, settings, and result so the run can be resumed",
+    )
+
+    resume = sub.add_parser(
+        "resume",
+        help="Continue a verification from a saved session",
+    )
+    resume.add_argument("session", help="Session JSON created by --save-session")
+    resume.add_argument("--model", default=None, help="Override the saved model")
+    resume.add_argument(
+        "--strictness",
+        type=float,
+        default=None,
+        help="Override the saved verification strictness",
+    )
+    resume.add_argument(
+        "--provider",
+        choices=["openai", "ollama", "custom"],
+        default=None,
+        help="Override the saved provider",
+    )
+    resume.add_argument("--base-url", default=None, help="Override the saved API URL")
+    resume.add_argument(
+        "--api-key-env",
+        default=None,
+        metavar="VAR",
+        help="Override the saved API-key environment variable",
+    )
+    resume.add_argument("--output", "-o", default=None, help="Write the new result to a file")
+    resume.add_argument(
+        "--output-format",
+        choices=["json", "markdown", "text", "csv"],
+        default=None,
+    )
+    resume.add_argument("--include-log", action="store_true")
+    resume.add_argument(
+        "--save-session",
+        default=None,
+        metavar="PATH",
+        help="Save the resumed run as a new session",
     )
 
     # tools subcommand
@@ -460,6 +505,26 @@ def cmd_verify(args: argparse.Namespace) -> None:
         raise
     _record_verify_run(args, prompt, result, time.time() - started, hallu)
 
+    session_path = getattr(args, "save_session", None)
+    if session_path:
+        sessions.save_session(
+            session_path,
+            prompt=prompt,
+            config={
+                "model": args.model,
+                "strictness": args.strictness,
+                "tools": list(args.tools or []),
+                "no_cache": bool(args.no_cache),
+                "cache_ttl": getattr(args, "cache_ttl", None),
+                "max_tokens": getattr(args, "max_tokens", None),
+                "timeout": getattr(args, "timeout", None),
+                "provider": getattr(args, "provider", "openai"),
+                "base_url": getattr(args, "base_url", None),
+                "api_key_env": getattr(args, "api_key_env", None),
+            },
+            result=result.to_dict(),
+        )
+
     output_format = _detect_output_format(args.output, args.output_format)
 
     if output_format == "json":
@@ -509,6 +574,48 @@ def cmd_verify(args: argparse.Namespace) -> None:
     if not getattr(args, "quiet", False):
         if args.verbose:
             print(f"Verbose: {result.token_usage.total_tokens} tokens, {result.elapsed_seconds:.2f}s", file=sys.stderr)
+
+
+def _cmd_resume(args: argparse.Namespace) -> int | None:
+    """Re-run a saved prompt with its original settings and optional overrides."""
+
+    try:
+        session = sessions.load_session(args.session)
+    except ValueError as exc:
+        print(f"resume: {exc}", file=sys.stderr)
+        return 2
+
+    config = session["config"]
+    verify_args = argparse.Namespace(
+        prompt=session["prompt"],
+        file=None,
+        model=args.model or config.get("model", "gpt-4o-mini"),
+        strictness=(
+            args.strictness
+            if args.strictness is not None
+            else config.get("strictness", 1.0)
+        ),
+        tools=list(config.get("tools") or []),
+        output=args.output,
+        output_format=args.output_format,
+        include_log=args.include_log,
+        no_cache=bool(config.get("no_cache", False)),
+        cache_ttl=config.get("cache_ttl"),
+        max_tokens=config.get("max_tokens"),
+        timeout=config.get("timeout"),
+        provider=args.provider or config.get("provider", "openai"),
+        base_url=(args.base_url if args.base_url is not None else config.get("base_url")),
+        api_key_env=(
+            args.api_key_env
+            if args.api_key_env is not None
+            else config.get("api_key_env")
+        ),
+        dry_run=False,
+        save_session=args.save_session,
+        verbose=getattr(args, "verbose", False),
+        quiet=getattr(args, "quiet", False),
+    )
+    return cmd_verify(verify_args)
 
 
 def cmd_estimate(args: argparse.Namespace) -> None:
@@ -1003,7 +1110,9 @@ def main(argv: Optional[list[str]] = None) -> None:
         return 0
 
     if args.command == "verify":
-        cmd_verify(args)
+        return cmd_verify(args)
+    elif args.command == "resume":
+        return _cmd_resume(args)
     elif args.command == "tools":
         return _cmd_tools()
     elif args.command == "models":
