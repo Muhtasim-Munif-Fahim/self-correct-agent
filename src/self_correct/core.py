@@ -13,6 +13,8 @@ References
     of Factual Precision in Long Form Text Generation." arXiv:2305.14251.
 """
 
+from __future__ import annotations
+
 import asyncio
 import hashlib
 import json
