@@ -109,6 +109,11 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help="Save the prompt, settings, and result so the run can be resumed",
     )
+    verify.add_argument(
+        "--fail-on-hallucination",
+        action="store_true",
+        help="Exit with status 1 when one or more claims are flagged",
+    )
 
     resume = sub.add_parser(
         "resume",
@@ -147,6 +152,11 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="PATH",
         help="Save the resumed run as a new session",
+    )
+    resume.add_argument(
+        "--fail-on-hallucination",
+        action="store_true",
+        help="Exit with status 1 when the resumed run flags a claim",
     )
 
     # tools subcommand
@@ -295,6 +305,11 @@ def _build_parser() -> argparse.ArgumentParser:
     batch.add_argument(
         "--schema", action="store_true",
         help="Print the output record schema and exit without processing",
+    )
+    batch.add_argument(
+        "--fail-on-hallucination",
+        action="store_true",
+        help="Exit with status 1 when any processed item flags a claim",
     )
 
     return parser
@@ -574,6 +589,21 @@ def cmd_verify(args: argparse.Namespace) -> None:
     if not getattr(args, "quiet", False):
         if args.verbose:
             print(f"Verbose: {result.token_usage.total_tokens} tokens, {result.elapsed_seconds:.2f}s", file=sys.stderr)
+    return _verification_exit_code(
+        result,
+        fail_on_hallucination=getattr(args, "fail_on_hallucination", False),
+    )
+
+
+def _verification_exit_code(
+    result: object,
+    *,
+    fail_on_hallucination: bool,
+) -> int:
+    """Translate verification findings into an opt-in CI exit code."""
+
+    flagged = getattr(result, "hallucinations_caught", None) or []
+    return 1 if fail_on_hallucination and flagged else 0
 
 
 def _cmd_resume(args: argparse.Namespace) -> int | None:
@@ -612,6 +642,7 @@ def _cmd_resume(args: argparse.Namespace) -> int | None:
         ),
         dry_run=False,
         save_session=args.save_session,
+        fail_on_hallucination=args.fail_on_hallucination,
         verbose=getattr(args, "verbose", False),
         quiet=getattr(args, "quiet", False),
     )
@@ -1077,6 +1108,8 @@ def cmd_batch(args: argparse.Namespace) -> None:
     errors = sum(1 for r in results if "error" in r)
     if not getattr(args, "quiet", False):
         print(f"Done: {len(results)} processed, {errors} error(s).", file=sys.stderr)
+    flagged = sum(bool(r.get("hallucinations_caught")) for r in results)
+    return 1 if getattr(args, "fail_on_hallucination", False) and flagged else 0
 
 
 def cmd_config_validate(args: argparse.Namespace) -> None:
@@ -1118,7 +1151,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     elif args.command == "models":
         return _cmd_models()
     elif args.command == "batch":
-        cmd_batch(args)
+        return cmd_batch(args)
     elif args.command == "history":
         return _cmd_history(args)
     elif args.command in ("template", "prompt"):
