@@ -10,6 +10,8 @@ Usage::
     self-correct verify --model gpt-4o-mini --file batch.txt --output-format markdown
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import sys
