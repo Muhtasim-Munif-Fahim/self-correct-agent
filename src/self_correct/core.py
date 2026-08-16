@@ -15,12 +15,14 @@ References
 
 import asyncio
 import hashlib
+import json
 import logging
 import re
 import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -314,6 +316,56 @@ class _ClaimCache:
         with self._lock:
             self._cache.clear()
 
+    def export_data(self) -> Dict[str, Any]:
+        """Return a versioned, JSON-serializable cache snapshot."""
+
+        with self._lock:
+            return {
+                "schema_version": 1,
+                "entries": [
+                    {
+                        "key": key,
+                        "stored_at": self._stored_at[key],
+                        "result": result,
+                    }
+                    for key, result in self._cache.items()
+                ],
+            }
+
+    def import_data(self, payload: Dict[str, Any]) -> int:
+        """Merge a cache snapshot and return the number of usable entries."""
+
+        if payload.get("schema_version") != 1 or not isinstance(
+            payload.get("entries"), list
+        ):
+            raise ValueError("unsupported claim cache snapshot")
+        now = time.time()
+        accepted = 0
+        with self._lock:
+            for entry in payload["entries"]:
+                if not isinstance(entry, dict):
+                    raise ValueError("claim cache entries must be objects")
+                key = entry.get("key")
+                stored_at = entry.get("stored_at")
+                result = entry.get("result")
+                if (
+                    not isinstance(key, str)
+                    or len(key) != 16
+                    or not isinstance(stored_at, (int, float))
+                    or not isinstance(result, dict)
+                ):
+                    raise ValueError("claim cache entry has invalid fields")
+                if self._ttl is not None and now - float(stored_at) >= self._ttl:
+                    continue
+                self._cache[key] = result
+                self._stored_at[key] = float(stored_at)
+                self._cache.move_to_end(key)
+                accepted += 1
+            while len(self._cache) > self._max_size:
+                evicted, _ = self._cache.popitem(last=False)
+                self._stored_at.pop(evicted, None)
+        return accepted
+
 
 # ------------------------------------------------------------------
 # Main class
@@ -402,6 +454,29 @@ class AntiHallucinator:
     def clear_cache(self) -> None:
         """Remove all cached claim verification results."""
         self._cache.clear()
+
+    def save_cache(self, path: str | Path) -> Path:
+        """Persist verified claims so later processes can reuse them."""
+
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            json.dumps(self._cache.export_data(), ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        return target
+
+    def load_cache(self, path: str | Path) -> int:
+        """Load usable verified claims from a cache snapshot."""
+
+        source = Path(path)
+        try:
+            payload = json.loads(source.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"cannot read claim cache '{source}': {exc}") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("claim cache snapshot must contain a JSON object")
+        return self._cache.import_data(payload)
 
     # ------------------------------------------------------------------
     # Private helpers

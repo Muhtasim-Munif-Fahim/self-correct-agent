@@ -108,6 +108,31 @@ def test_cache_management_helpers() -> None:
     assert agent.cache_size == 0
 
 
+def test_claim_cache_persists_between_agents(tmp_path) -> None:
+    first = AntiHallucinator(MagicMock(), cache_size=2)
+    first.cache.put("Paris is in France", {"is_valid": True, "critique": "ok"})
+    snapshot = first.save_cache(tmp_path / "nested" / "claims.json")
+
+    second = AntiHallucinator(MagicMock(), cache_size=2)
+    assert second.load_cache(snapshot) == 1
+    assert second.cache.get("paris is in france") == {
+        "is_valid": True,
+        "critique": "ok",
+    }
+
+
+def test_claim_cache_respects_destination_capacity(tmp_path) -> None:
+    source = AntiHallucinator(MagicMock(), cache_size=3)
+    for claim in ("A", "B", "C"):
+        source.cache.put(claim, {"claim": claim})
+    snapshot = source.save_cache(tmp_path / "claims.json")
+
+    destination = AntiHallucinator(MagicMock(), cache_size=2)
+    assert destination.load_cache(snapshot) == 3
+    assert destination.cache_size == 2
+    assert destination.cache.get("A") is None
+
+
 # ------------------------------------------------------------------
 # Initialization
 # ------------------------------------------------------------------
