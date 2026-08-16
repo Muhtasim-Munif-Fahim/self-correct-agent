@@ -136,6 +136,11 @@ class AntiHallucinationResponse:
     token_usage: TokenUsage = field(default_factory=TokenUsage)
     elapsed_seconds: float = 0.0
 
+    def evaluate(self, policy: "VerificationPolicy") -> "VerificationDecision":
+        """Evaluate this response against a reusable release policy."""
+
+        return policy.evaluate(self)
+
     def to_dict(self) -> Dict[str, Any]:
         """Serialize the response to a plain dictionary."""
         return {
@@ -217,6 +222,68 @@ class AntiHallucinationResponse:
                 lines.append("")
 
         return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class VerificationDecision:
+    """Outcome of applying a verification policy to a response."""
+
+    passed: bool
+    verified_ratio: float
+    total_claims: int
+    verified_claims: int
+    flagged_claims: int
+    reasons: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "passed": self.passed,
+            "verified_ratio": self.verified_ratio,
+            "total_claims": self.total_claims,
+            "verified_claims": self.verified_claims,
+            "flagged_claims": self.flagged_claims,
+            "reasons": list(self.reasons),
+        }
+
+
+@dataclass(frozen=True)
+class VerificationPolicy:
+    """Quality gate for deciding whether a verified response may ship."""
+
+    min_verified_ratio: float = 1.0
+    max_flagged_claims: int = 0
+    require_claims: bool = False
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.min_verified_ratio <= 1.0:
+            raise ValueError("min_verified_ratio must be between 0 and 1")
+        if self.max_flagged_claims < 0:
+            raise ValueError("max_flagged_claims must be non-negative")
+
+    def evaluate(self, response: AntiHallucinationResponse) -> VerificationDecision:
+        total = len(response.verification_log)
+        verified = sum(bool(entry.get("is_valid")) for entry in response.verification_log)
+        flagged = len(response.hallucinations_caught)
+        ratio = verified / total if total else 1.0
+        reasons: List[str] = []
+        if self.require_claims and total == 0:
+            reasons.append("no factual claims were verified")
+        if ratio < self.min_verified_ratio:
+            reasons.append(
+                f"verified ratio {ratio:.1%} is below {self.min_verified_ratio:.1%}"
+            )
+        if flagged > self.max_flagged_claims:
+            reasons.append(
+                f"flagged claims {flagged} exceed {self.max_flagged_claims}"
+            )
+        return VerificationDecision(
+            passed=not reasons,
+            verified_ratio=ratio,
+            total_claims=total,
+            verified_claims=verified,
+            flagged_claims=flagged,
+            reasons=reasons,
+        )
 
 
 # ------------------------------------------------------------------

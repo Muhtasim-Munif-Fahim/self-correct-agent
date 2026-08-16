@@ -1,6 +1,12 @@
 """Public package exports for self-correct-agent."""
 
-from .core import AntiHallucinator, AntiHallucinationResponse, TokenUsage
+from .core import (
+    AntiHallucinator,
+    AntiHallucinationResponse,
+    TokenUsage,
+    VerificationDecision,
+    VerificationPolicy,
+)
 from .tools import DuckDuckGoSearchTool, SearchResult, StaticKnowledgeTool, Tool, WikipediaSearchTool
 
 __version__ = "0.2.4"
@@ -13,6 +19,8 @@ __all__ = [
     "StaticKnowledgeTool",
     "__version__",
     "TokenUsage",
+    "VerificationDecision",
+    "VerificationPolicy",
     "Tool",
     "WikipediaSearchTool",
 ]

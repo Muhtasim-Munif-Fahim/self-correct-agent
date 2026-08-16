@@ -4,7 +4,13 @@ import asyncio
 import pytest
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock
-from self_correct.core import AntiHallucinator, TokenUsage, _ClaimCache
+from self_correct.core import (
+    AntiHallucinator,
+    AntiHallucinationResponse,
+    TokenUsage,
+    VerificationPolicy,
+    _ClaimCache,
+)
 
 
 def _mock_response(content: str, prompt_tokens: int = 10, completion_tokens: int = 20) -> MagicMock:
@@ -145,6 +151,33 @@ def test_strictness_clamped_high() -> None:
 def test_strictness_clamped_low() -> None:
     agent = AntiHallucinator(MagicMock(), strictness=-1.0)
     assert agent.strictness == 0.0
+
+
+def test_verification_policy_explains_failed_release_gate() -> None:
+    response = AntiHallucinationResponse(
+        content="Corrected",
+        hallucinations_caught=["bad claim"],
+        verification_log=[
+            {"claim": "good", "is_valid": True},
+            {"claim": "bad", "is_valid": False},
+        ],
+    )
+    decision = response.evaluate(
+        VerificationPolicy(min_verified_ratio=0.75, max_flagged_claims=0)
+    )
+    assert decision.passed is False
+    assert decision.verified_ratio == 0.5
+    assert decision.reasons == [
+        "verified ratio 50.0% is below 75.0%",
+        "flagged claims 1 exceed 0",
+    ]
+
+
+def test_verification_policy_can_require_at_least_one_claim() -> None:
+    response = AntiHallucinationResponse(content="No factual claims")
+    decision = response.evaluate(VerificationPolicy(require_claims=True))
+    assert decision.to_dict()["passed"] is False
+    assert decision.reasons == ["no factual claims were verified"]
 
 
 # ------------------------------------------------------------------
