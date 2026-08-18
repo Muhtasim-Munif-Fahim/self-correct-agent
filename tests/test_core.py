@@ -1,6 +1,8 @@
 """Tests for self_correct.core.AntiHallucinator."""
 
 import asyncio
+import threading
+import time
 import pytest
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock
@@ -589,6 +591,48 @@ def test_generate_async_parallel_verification() -> None:
     assert mock_client.chat.completions.create.call_count == 4
     assert len(result.verification_log) == 2
     assert all(r["is_valid"] for r in result.verification_log)
+
+
+def test_generate_async_honors_max_concurrency() -> None:
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.side_effect = [
+        _mock_response("Claim one. Claim two. Claim three."),
+        _mock_response("1. Claim one.\n2. Claim two.\n3. Claim three."),
+    ]
+    agent = AntiHallucinator(mock_client, strictness=1.0)
+    active = 0
+    peak = 0
+    lock = threading.Lock()
+
+    def verify(*args, **kwargs):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        time.sleep(0.03)
+        with lock:
+            active -= 1
+        return {
+            "claim": args[0],
+            "is_valid": True,
+            "critique": "VERIFIED: True.",
+            "evidence_used": False,
+            "cached": False,
+        }
+
+    agent._verify_single_claim = verify
+    result = asyncio.run(
+        agent.generate_async(model="dummy", prompt="Facts?", max_concurrency=2)
+    )
+
+    assert len(result.verification_log) == 3
+    assert peak == 2
+
+
+def test_generate_async_rejects_invalid_concurrency() -> None:
+    agent = AntiHallucinator(MagicMock())
+    with pytest.raises(ValueError, match="positive integer"):
+        asyncio.run(agent.generate_async("dummy", "prompt", max_concurrency=0))
 
 
 class TestClaimCacheTTL:

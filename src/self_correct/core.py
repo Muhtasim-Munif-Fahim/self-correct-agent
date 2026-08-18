@@ -886,19 +886,25 @@ class AntiHallucinator:
     # ------------------------------------------------------------------
 
     async def generate_async(
-        self, model: str, prompt: str
+        self, model: str, prompt: str, *, max_concurrency: int | None = None
     ) -> AntiHallucinationResponse:
         """
         Async version of generate() that verifies claims in parallel.
 
-        All claims are verified concurrently using asyncio, significantly
-        reducing total latency when many claims are extracted.
+        Claims are verified concurrently using asyncio, significantly
+        reducing total latency when many claims are extracted.  Set
+        ``max_concurrency`` to protect a provider from bursts or rate limits.
 
         Usage::
 
             import asyncio
             result = asyncio.run(safe_client.generate_async(model, prompt))
         """
+        if max_concurrency is not None and (
+            isinstance(max_concurrency, bool) or max_concurrency < 1
+        ):
+            raise ValueError("max_concurrency must be a positive integer or None")
+
         start = time.monotonic()
         usage = TokenUsage()
 
@@ -941,13 +947,29 @@ class AntiHallucinator:
         critique_prompt = self._build_critique_prompt()
         use_tools = self.strictness >= 0.8 and len(self.tools) > 0
         cache_scope = self._cache_scope(model, critique_prompt, use_tools)
+        semaphore = asyncio.Semaphore(max_concurrency) if max_concurrency else None
 
         async def _verify(claim: str) -> Dict[str, Any]:
-            return await asyncio.to_thread(
-                self._verify_single_claim,
-                claim, model, critique_prompt, use_tools, usage,
-                cache_scope=cache_scope,
-            )
+            if semaphore is None:
+                return await asyncio.to_thread(
+                    self._verify_single_claim,
+                    claim,
+                    model,
+                    critique_prompt,
+                    use_tools,
+                    usage,
+                    cache_scope=cache_scope,
+                )
+            async with semaphore:
+                return await asyncio.to_thread(
+                    self._verify_single_claim,
+                    claim,
+                    model,
+                    critique_prompt,
+                    use_tools,
+                    usage,
+                    cache_scope=cache_scope,
+                )
 
         verification_results = await asyncio.gather(
             *[_verify(c) for c in claims]
