@@ -235,6 +235,8 @@ class VerificationDecision:
     total_claims: int
     verified_claims: int
     flagged_claims: int
+    evidence_ratio: float
+    evidence_claims: int
     reasons: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -244,6 +246,8 @@ class VerificationDecision:
             "total_claims": self.total_claims,
             "verified_claims": self.verified_claims,
             "flagged_claims": self.flagged_claims,
+            "evidence_ratio": self.evidence_ratio,
+            "evidence_claims": self.evidence_claims,
             "reasons": list(self.reasons),
         }
 
@@ -255,12 +259,18 @@ class VerificationPolicy:
     min_verified_ratio: float = 1.0
     max_flagged_claims: int = 0
     require_claims: bool = False
+    min_evidence_ratio: float = 0.0
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "VerificationPolicy":
         if not isinstance(data, dict):
             raise ValueError("verification policy must be a JSON object")
-        allowed = {"min_verified_ratio", "max_flagged_claims", "require_claims"}
+        allowed = {
+            "min_verified_ratio",
+            "max_flagged_claims",
+            "require_claims",
+            "min_evidence_ratio",
+        }
         unknown = sorted(set(data) - allowed)
         if unknown:
             raise ValueError(f"unknown verification policy fields: {', '.join(unknown)}")
@@ -268,6 +278,7 @@ class VerificationPolicy:
             min_verified_ratio=float(data.get("min_verified_ratio", 1.0)),
             max_flagged_claims=int(data.get("max_flagged_claims", 0)),
             require_claims=bool(data.get("require_claims", False)),
+            min_evidence_ratio=float(data.get("min_evidence_ratio", 0.0)),
         )
 
     @classmethod
@@ -284,18 +295,29 @@ class VerificationPolicy:
             raise ValueError("min_verified_ratio must be between 0 and 1")
         if self.max_flagged_claims < 0:
             raise ValueError("max_flagged_claims must be non-negative")
+        if not 0.0 <= self.min_evidence_ratio <= 1.0:
+            raise ValueError("min_evidence_ratio must be between 0 and 1")
 
     def evaluate(self, response: AntiHallucinationResponse) -> VerificationDecision:
         total = len(response.verification_log)
         verified = sum(bool(entry.get("is_valid")) for entry in response.verification_log)
+        evidence_claims = sum(
+            bool(entry.get("evidence_used")) for entry in response.verification_log
+        )
         flagged = len(response.hallucinations_caught)
         ratio = verified / total if total else 1.0
+        evidence_ratio = evidence_claims / total if total else 1.0
         reasons: List[str] = []
         if self.require_claims and total == 0:
             reasons.append("no factual claims were verified")
         if ratio < self.min_verified_ratio:
             reasons.append(
                 f"verified ratio {ratio:.1%} is below {self.min_verified_ratio:.1%}"
+            )
+        if evidence_ratio < self.min_evidence_ratio:
+            reasons.append(
+                f"evidence ratio {evidence_ratio:.1%} is below "
+                f"{self.min_evidence_ratio:.1%}"
             )
         if flagged > self.max_flagged_claims:
             reasons.append(
@@ -307,6 +329,8 @@ class VerificationPolicy:
             total_claims=total,
             verified_claims=verified,
             flagged_claims=flagged,
+            evidence_ratio=evidence_ratio,
+            evidence_claims=evidence_claims,
             reasons=reasons,
         )
 

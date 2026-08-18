@@ -213,16 +213,38 @@ def test_verification_policy_can_require_at_least_one_claim() -> None:
     assert decision.reasons == ["no factual claims were verified"]
 
 
+def test_verification_policy_can_require_evidence_coverage() -> None:
+    response = AntiHallucinationResponse(
+        content="Answer",
+        verification_log=[
+            {"claim": "one", "is_valid": True, "evidence_used": True},
+            {"claim": "two", "is_valid": True, "evidence_used": False},
+        ],
+    )
+    decision = response.evaluate(VerificationPolicy(min_evidence_ratio=1.0))
+
+    assert decision.passed is False
+    assert decision.evidence_claims == 1
+    assert decision.evidence_ratio == 0.5
+    assert decision.reasons == ["evidence ratio 50.0% is below 100.0%"]
+
+
 def test_verification_policy_loads_from_json(tmp_path) -> None:
     path = tmp_path / "policy.json"
     path.write_text(
-        '{"min_verified_ratio": 0.8, "max_flagged_claims": 1, "require_claims": true}',
+        '{"min_verified_ratio": 0.8, "max_flagged_claims": 1, "require_claims": true, "min_evidence_ratio": 0.5}',
         encoding="utf-8",
     )
     policy = VerificationPolicy.from_json(path)
     assert policy.min_verified_ratio == 0.8
     assert policy.max_flagged_claims == 1
     assert policy.require_claims is True
+    assert policy.min_evidence_ratio == 0.5
+
+
+def test_verification_policy_rejects_invalid_evidence_ratio() -> None:
+    with pytest.raises(ValueError, match="min_evidence_ratio"):
+        VerificationPolicy(min_evidence_ratio=1.1)
 
 
 def test_verification_policy_rejects_unknown_fields() -> None:
