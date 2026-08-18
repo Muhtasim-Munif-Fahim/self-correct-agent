@@ -16,6 +16,7 @@ import argparse
 import json
 import sys
 import time
+from pathlib import Path
 from typing import Optional
 
 from . import history, sessions, templates
@@ -80,6 +81,12 @@ def _build_parser() -> argparse.ArgumentParser:
     verify.add_argument(
         "--cache-ttl", type=float, default=None, metavar="SECONDS",
         help="Expire cached verifications after SECONDS (default: never)",
+    )
+    verify.add_argument(
+        "--cache-file",
+        default=None,
+        metavar="PATH",
+        help="Load and update a persistent verified-claim cache",
     )
     verify.add_argument(
         "--max-tokens", type=int, default=None,
@@ -507,6 +514,11 @@ def cmd_verify(args: argparse.Namespace) -> None:
         cache_size=0 if args.no_cache else 256,
         cache_ttl=getattr(args, "cache_ttl", None),
     )
+    cache_file = getattr(args, "cache_file", None)
+    if cache_file and args.no_cache:
+        raise ValueError("--cache-file cannot be combined with --no-cache")
+    if cache_file and Path(cache_file).exists():
+        hallu.load_cache(cache_file)
 
     started = time.time()
     try:
@@ -521,6 +533,8 @@ def cmd_verify(args: argparse.Namespace) -> None:
         })
         raise
     _record_verify_run(args, prompt, result, time.time() - started, hallu)
+    if cache_file:
+        hallu.save_cache(cache_file)
 
     session_path = getattr(args, "save_session", None)
     if session_path:
@@ -533,6 +547,7 @@ def cmd_verify(args: argparse.Namespace) -> None:
                 "tools": list(args.tools or []),
                 "no_cache": bool(args.no_cache),
                 "cache_ttl": getattr(args, "cache_ttl", None),
+                "cache_file": cache_file,
                 "max_tokens": getattr(args, "max_tokens", None),
                 "timeout": getattr(args, "timeout", None),
                 "provider": getattr(args, "provider", "openai"),

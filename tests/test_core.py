@@ -139,6 +139,23 @@ def test_claim_cache_respects_destination_capacity(tmp_path) -> None:
     assert destination.cache.get("A") is None
 
 
+def test_claim_cache_snapshot_can_be_updated_in_place(tmp_path) -> None:
+    path = tmp_path / "claims.json"
+    first = AntiHallucinator(MagicMock())
+    first.cache.put("Claim A", {"is_valid": True})
+    first.save_cache(path)
+
+    second = AntiHallucinator(MagicMock())
+    second.load_cache(path)
+    second.cache.put("Claim B", {"is_valid": False})
+    second.save_cache(path)
+
+    restored = AntiHallucinator(MagicMock())
+    assert restored.load_cache(path) == 2
+    assert restored.cache.get("Claim A") is not None
+    assert restored.cache.get("Claim B") is not None
+
+
 # ------------------------------------------------------------------
 # Initialization
 # ------------------------------------------------------------------
