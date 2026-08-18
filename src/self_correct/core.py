@@ -256,6 +256,29 @@ class VerificationPolicy:
     max_flagged_claims: int = 0
     require_claims: bool = False
 
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "VerificationPolicy":
+        if not isinstance(data, dict):
+            raise ValueError("verification policy must be a JSON object")
+        allowed = {"min_verified_ratio", "max_flagged_claims", "require_claims"}
+        unknown = sorted(set(data) - allowed)
+        if unknown:
+            raise ValueError(f"unknown verification policy fields: {', '.join(unknown)}")
+        return cls(
+            min_verified_ratio=float(data.get("min_verified_ratio", 1.0)),
+            max_flagged_claims=int(data.get("max_flagged_claims", 0)),
+            require_claims=bool(data.get("require_claims", False)),
+        )
+
+    @classmethod
+    def from_json(cls, path: str | Path) -> "VerificationPolicy":
+        source = Path(path)
+        try:
+            payload = json.loads(source.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"cannot read verification policy '{source}': {exc}") from exc
+        return cls.from_dict(payload)
+
     def __post_init__(self) -> None:
         if not 0.0 <= self.min_verified_ratio <= 1.0:
             raise ValueError("min_verified_ratio must be between 0 and 1")

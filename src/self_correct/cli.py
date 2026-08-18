@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import history, sessions, templates
-from .core import MODEL_PRICING, AntiHallucinator, model_pricing
+from .core import MODEL_PRICING, AntiHallucinator, VerificationPolicy, model_pricing
 from .tools import DuckDuckGoSearchTool, WikipediaSearchTool
 
 
@@ -122,6 +122,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--fail-on-hallucination",
         action="store_true",
         help="Exit with status 1 when one or more claims are flagged",
+    )
+    verify.add_argument(
+        "--policy",
+        default=None,
+        metavar="PATH",
+        help="Apply a JSON verification policy and fail when it is not satisfied",
     )
 
     resume = sub.add_parser(
@@ -553,6 +559,7 @@ def cmd_verify(args: argparse.Namespace) -> None:
                 "provider": getattr(args, "provider", "openai"),
                 "base_url": getattr(args, "base_url", None),
                 "api_key_env": getattr(args, "api_key_env", None),
+                "policy": getattr(args, "policy", None),
             },
             result=result.to_dict(),
         )
@@ -606,9 +613,18 @@ def cmd_verify(args: argparse.Namespace) -> None:
     if not getattr(args, "quiet", False):
         if args.verbose:
             print(f"Verbose: {result.token_usage.total_tokens} tokens, {result.elapsed_seconds:.2f}s", file=sys.stderr)
+    policy = (
+        VerificationPolicy.from_json(args.policy)
+        if getattr(args, "policy", None)
+        else None
+    )
+    decision = result.evaluate(policy) if policy is not None else None
+    if decision is not None and not decision.passed:
+        print("Verification policy failed: " + "; ".join(decision.reasons), file=sys.stderr)
     return _verification_exit_code(
         result,
         fail_on_hallucination=getattr(args, "fail_on_hallucination", False),
+        policy=policy,
     )
 
 
@@ -616,11 +632,16 @@ def _verification_exit_code(
     result: object,
     *,
     fail_on_hallucination: bool,
+    policy: VerificationPolicy | None = None,
 ) -> int:
     """Translate verification findings into an opt-in CI exit code."""
 
     flagged = getattr(result, "hallucinations_caught", None) or []
-    return 1 if fail_on_hallucination and flagged else 0
+    if fail_on_hallucination and flagged:
+        return 1
+    if policy is not None and not policy.evaluate(result).passed:
+        return 1
+    return 0
 
 
 def _cmd_resume(args: argparse.Namespace) -> int | None:
@@ -657,6 +678,7 @@ def _cmd_resume(args: argparse.Namespace) -> int | None:
             if args.api_key_env is not None
             else config.get("api_key_env")
         ),
+        policy=config.get("policy"),
         dry_run=False,
         save_session=args.save_session,
         fail_on_hallucination=args.fail_on_hallucination,

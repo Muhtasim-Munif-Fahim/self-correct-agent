@@ -197,6 +197,23 @@ def test_verification_policy_can_require_at_least_one_claim() -> None:
     assert decision.reasons == ["no factual claims were verified"]
 
 
+def test_verification_policy_loads_from_json(tmp_path) -> None:
+    path = tmp_path / "policy.json"
+    path.write_text(
+        '{"min_verified_ratio": 0.8, "max_flagged_claims": 1, "require_claims": true}',
+        encoding="utf-8",
+    )
+    policy = VerificationPolicy.from_json(path)
+    assert policy.min_verified_ratio == 0.8
+    assert policy.max_flagged_claims == 1
+    assert policy.require_claims is True
+
+
+def test_verification_policy_rejects_unknown_fields() -> None:
+    with pytest.raises(ValueError, match="unknown verification policy fields"):
+        VerificationPolicy.from_dict({"minimum_score": 0.9})
+
+
 # ------------------------------------------------------------------
 # Claim Parsing
 # ------------------------------------------------------------------
