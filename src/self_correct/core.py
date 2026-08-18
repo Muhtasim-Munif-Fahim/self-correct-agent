@@ -331,18 +331,20 @@ class _ClaimCache:
         self._evictions = 0
 
     @staticmethod
-    def _key(claim: str) -> str:
-        """Hash the claim text to create a cache key."""
-        return hashlib.sha256(claim.strip().lower().encode()).hexdigest()[:16]
+    def _key(claim: str, scope: Optional[str] = None) -> str:
+        """Hash a claim and optional verification scope to create a key."""
+        normalized_claim = claim.strip().lower()
+        material = normalized_claim if scope is None else f"{scope.strip()}\0{normalized_claim}"
+        return hashlib.sha256(material.encode()).hexdigest()[:16]
 
     def _is_expired(self, key: str, now: float) -> bool:
         if self._ttl is None:
             return False
         return (now - self._stored_at.get(key, 0.0)) >= self._ttl
 
-    def get(self, claim: str) -> Optional[Dict[str, Any]]:
+    def get(self, claim: str, scope: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Return a cached result, or None if absent or expired."""
-        key = self._key(claim)
+        key = self._key(claim, scope)
         now = time.time()
         with self._lock:
             if key not in self._cache:
@@ -360,9 +362,11 @@ class _ClaimCache:
             self._hits += 1
             return self._cache[key]
 
-    def put(self, claim: str, result: Dict[str, Any]) -> None:
+    def put(
+        self, claim: str, result: Dict[str, Any], scope: Optional[str] = None
+    ) -> None:
         """Store a verification result."""
-        key = self._key(claim)
+        key = self._key(claim, scope)
         with self._lock:
             self._cache[key] = result
             self._stored_at[key] = time.time()
@@ -666,6 +670,23 @@ class AntiHallucinator:
             "Only output 'VERIFIED: False' if the claim is clearly wrong."
         )
 
+    def _cache_scope(self, model: str, critique_prompt: str, use_tools: bool) -> str:
+        """Return the settings that make a claim verification reusable."""
+
+        tool_names = sorted(
+            str(getattr(tool, "name", type(tool).__name__)) for tool in self.tools
+        )
+        return json.dumps(
+            {
+                "model": model,
+                "critique_prompt": critique_prompt,
+                "strictness": self.strictness,
+                "tools": tool_names if use_tools else [],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
     def _search_evidence(self, claim: str, max_results: int = 3) -> str:
         """Search all registered tools for evidence related to a claim."""
         evidence_parts: List[str] = []
@@ -693,6 +714,7 @@ class AntiHallucinator:
         use_tools: bool,
         usage: TokenUsage,
         max_tokens: int | None = None,
+        cache_scope: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Verify a single claim, checking the cache first.
@@ -704,7 +726,7 @@ class AntiHallucinator:
             critique, evidence_used, cached.
         """
         # Check cache first
-        cached = self._cache.get(claim)
+        cached = self._cache.get(claim, scope=cache_scope)
         if cached is not None:
             return {**cached, "cached": True}
 
@@ -738,12 +760,16 @@ class AntiHallucinator:
         }
 
         # Store in cache
-        self._cache.put(claim, {
-            "claim": claim,
-            "is_valid": is_valid,
-            "critique": critique,
-            "evidence_used": bool(evidence_context),
-        })
+        self._cache.put(
+            claim,
+            {
+                "claim": claim,
+                "is_valid": is_valid,
+                "critique": critique,
+                "evidence_used": bool(evidence_context),
+            },
+            scope=cache_scope,
+        )
 
         return result
 
@@ -805,14 +831,20 @@ class AntiHallucinator:
         # Phase 3: Critique / Verification
         critique_prompt = self._build_critique_prompt()
         use_tools = self.strictness >= 0.8 and len(self.tools) > 0
+        cache_scope = self._cache_scope(model, critique_prompt, use_tools)
 
         verification_log: List[Dict[str, Any]] = []
         hallucinations_caught: List[str] = []
 
         for claim in claims:
             result = self._verify_single_claim(
-                claim, model, critique_prompt, use_tools, usage,
+                claim,
+                model,
+                critique_prompt,
+                use_tools,
+                usage,
                 max_tokens=max_tokens,
+                cache_scope=cache_scope,
             )
             verification_log.append(result)
             if not result["is_valid"]:
@@ -908,11 +940,13 @@ class AntiHallucinator:
         # Phase 3: Parallel claim verification
         critique_prompt = self._build_critique_prompt()
         use_tools = self.strictness >= 0.8 and len(self.tools) > 0
+        cache_scope = self._cache_scope(model, critique_prompt, use_tools)
 
         async def _verify(claim: str) -> Dict[str, Any]:
             return await asyncio.to_thread(
                 self._verify_single_claim,
                 claim, model, critique_prompt, use_tools, usage,
+                cache_scope=cache_scope,
             )
 
         verification_results = await asyncio.gather(

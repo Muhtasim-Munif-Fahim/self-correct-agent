@@ -81,6 +81,20 @@ def test_cache_case_insensitive() -> None:
     assert cache.get("the sky is blue") is not None
 
 
+def test_cache_scopes_prevent_cross_configuration_reuse() -> None:
+    cache = _ClaimCache(max_size=10)
+    cache.put("The sky is blue", {"model": "small"}, scope="model=small")
+
+    assert cache.get("the sky is blue", scope="model=small") == {"model": "small"}
+    assert cache.get("the sky is blue", scope="model=large") is None
+
+
+def test_unscoped_cache_keys_remain_backward_compatible() -> None:
+    cache = _ClaimCache(max_size=10)
+    cache.put("The sky is blue", {"is_valid": True})
+    assert cache.get("the sky is blue") == {"is_valid": True}
+
+
 def test_cache_eviction() -> None:
     """Oldest entry should be evicted when cache is full."""
     cache = _ClaimCache(max_size=2)
@@ -332,6 +346,21 @@ def test_custom_prompts_are_used() -> None:
     assert calls[2].kwargs["messages"][0]["content"] == "Check claims with care"
     assert calls[3].kwargs["messages"][0]["content"] == "Check claims with care"
     assert calls[4].kwargs["messages"][0]["content"] == "Rewrite the draft conservatively"
+
+
+def test_cache_scope_changes_with_model_and_tools() -> None:
+    tool = MagicMock()
+    tool.name = "Search"
+    first = AntiHallucinator(MagicMock(), tools=[tool])
+    second = AntiHallucinator(MagicMock())
+    prompt = first._build_critique_prompt()
+
+    assert first._cache_scope("model-a", prompt, True) != first._cache_scope(
+        "model-b", prompt, True
+    )
+    assert first._cache_scope("model-a", prompt, True) != second._cache_scope(
+        "model-a", prompt, False
+    )
 
 
 # ------------------------------------------------------------------
