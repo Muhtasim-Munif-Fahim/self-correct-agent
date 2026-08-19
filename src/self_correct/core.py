@@ -19,6 +19,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import re
 import threading
 import time
@@ -532,6 +533,8 @@ class AntiHallucinator:
             "You may remove sentences or rewrite them. "
             "Do NOT add new factual claims."
         ),
+        max_retries: int = 0,
+        retry_backoff: float = 0.0,
     ) -> None:
         """
         Initialize the AntiHallucinator wrapper.
@@ -546,7 +549,15 @@ class AntiHallucinator:
             Verification tools (e.g., DuckDuckGoSearchTool).
         cache_size : int
             Max entries in the LRU claim cache.
+        max_retries : int
+            Number of additional attempts after a failed provider call.
+        retry_backoff : float
+            Initial delay between retries; delays double for each attempt.
         """
+        if isinstance(max_retries, bool) or max_retries < 0:
+            raise ValueError("max_retries must be a non-negative integer")
+        if not math.isfinite(retry_backoff) or retry_backoff < 0:
+            raise ValueError("retry_backoff must be a finite non-negative number")
         self.client = client
         self.strictness = max(0.0, min(1.0, strictness))
         self.tools = tools or []
@@ -555,6 +566,8 @@ class AntiHallucinator:
         self._extraction_prompt = extraction_prompt
         self._critique_prompt = critique_prompt
         self._correction_prompt = correction_prompt
+        self.max_retries = max_retries
+        self.retry_backoff = retry_backoff
 
     @property
     def cache(self) -> _ClaimCache:
@@ -631,7 +644,18 @@ class AntiHallucinator:
             )
             if max_tokens is not None:
                 kwargs["max_tokens"] = max_tokens
-            response = self.client.chat.completions.create(**kwargs)
+            for attempt in range(self.max_retries + 1):
+                try:
+                    response = self.client.chat.completions.create(**kwargs)
+                    break
+                except AttributeError:
+                    raise
+                except Exception:
+                    if attempt >= self.max_retries:
+                        raise
+                    delay = self.retry_backoff * (2**attempt)
+                    if delay:
+                        time.sleep(delay)
             # Accumulate token usage if the response provides it
             if usage is not None:
                 resp_usage = getattr(response, "usage", None)

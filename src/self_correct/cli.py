@@ -93,6 +93,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Maximum tokens for the LLM response",
     )
     verify.add_argument(
+        "--max-retries", type=int, default=0,
+        help="Retry failed provider calls this many times (default: 0)",
+    )
+    verify.add_argument(
+        "--retry-backoff", type=float, default=0.0, metavar="SECONDS",
+        help="Initial delay between retries; delays double after each attempt",
+    )
+    verify.add_argument(
         "--timeout", type=float, default=None, metavar="SECONDS",
         help="Abort the run if the API does not respond within SECONDS",
     )
@@ -172,6 +180,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--fail-on-hallucination",
         action="store_true",
         help="Exit with status 1 when the resumed run flags a claim",
+    )
+    resume.add_argument(
+        "--max-retries", type=int, default=None,
+        help="Override the saved retry count",
+    )
+    resume.add_argument(
+        "--retry-backoff", type=float, default=None, metavar="SECONDS",
+        help="Override the saved retry backoff",
     )
 
     # tools subcommand
@@ -519,6 +535,8 @@ def cmd_verify(args: argparse.Namespace) -> None:
         tools=tools or None,
         cache_size=0 if args.no_cache else 256,
         cache_ttl=getattr(args, "cache_ttl", None),
+        max_retries=getattr(args, "max_retries", 0),
+        retry_backoff=getattr(args, "retry_backoff", 0.0),
     )
     cache_file = getattr(args, "cache_file", None)
     if cache_file and args.no_cache:
@@ -555,6 +573,8 @@ def cmd_verify(args: argparse.Namespace) -> None:
                 "cache_ttl": getattr(args, "cache_ttl", None),
                 "cache_file": cache_file,
                 "max_tokens": getattr(args, "max_tokens", None),
+                "max_retries": getattr(args, "max_retries", 0),
+                "retry_backoff": getattr(args, "retry_backoff", 0.0),
                 "timeout": getattr(args, "timeout", None),
                 "provider": getattr(args, "provider", "openai"),
                 "base_url": getattr(args, "base_url", None),
@@ -670,6 +690,16 @@ def _cmd_resume(args: argparse.Namespace) -> int | None:
         no_cache=bool(config.get("no_cache", False)),
         cache_ttl=config.get("cache_ttl"),
         max_tokens=config.get("max_tokens"),
+        max_retries=(
+            args.max_retries
+            if args.max_retries is not None
+            else config.get("max_retries", 0)
+        ),
+        retry_backoff=(
+            args.retry_backoff
+            if args.retry_backoff is not None
+            else config.get("retry_backoff", 0.0)
+        ),
         timeout=config.get("timeout"),
         provider=args.provider or config.get("provider", "openai"),
         base_url=(args.base_url if args.base_url is not None else config.get("base_url")),

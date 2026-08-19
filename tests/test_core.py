@@ -305,6 +305,28 @@ def test_call_llm_api_error_wrapped() -> None:
         agent._call_llm("dummy", "sys", "usr")
 
 
+def test_call_llm_retries_transient_provider_failure(monkeypatch) -> None:
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.side_effect = [
+        ConnectionError("temporary"),
+        _mock_response("recovered"),
+    ]
+    sleeps = []
+    monkeypatch.setattr("self_correct.core.time.sleep", sleeps.append)
+    agent = AntiHallucinator(mock_client, max_retries=1, retry_backoff=0.25)
+
+    assert agent._call_llm("dummy", "sys", "usr") == "recovered"
+    assert mock_client.chat.completions.create.call_count == 2
+    assert sleeps == [0.25]
+
+
+def test_call_llm_retry_configuration_is_validated() -> None:
+    with pytest.raises(ValueError, match="max_retries"):
+        AntiHallucinator(MagicMock(), max_retries=-1)
+    with pytest.raises(ValueError, match="retry_backoff"):
+        AntiHallucinator(MagicMock(), retry_backoff=-0.1)
+
+
 def test_call_llm_bad_client_interface() -> None:
     agent = AntiHallucinator("not_a_client")
     with pytest.raises(ValueError, match="OpenAI-compatible"):
