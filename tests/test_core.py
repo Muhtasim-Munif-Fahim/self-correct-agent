@@ -771,3 +771,45 @@ class TestModelPricing:
 
         usage = TokenUsage(prompt_tokens=1000, completion_tokens=1000)
         assert usage.estimate_cost_for_model("llama-3-70b") is None
+
+# ------------------------------------------------------------------
+# Hallucination density scoring
+# ------------------------------------------------------------------
+
+def test_density_counts_flagged_claims_per_words() -> None:
+    response = AntiHallucinationResponse(
+        content="one two three four five six seven eight nine ten " * 10,
+        hallucinations_caught=["a", "b"],
+    )
+    assert response.hallucination_density() == 2.0
+
+def test_density_scales_with_chunk_size() -> None:
+    response = AntiHallucinationResponse(
+        content="word " * 100,
+        hallucinations_caught=["x"],
+    )
+    assert response.hallucination_density(per_words=50) == 0.5
+
+def test_density_zero_for_empty_response() -> None:
+    response = AntiHallucinationResponse(content="")
+    assert response.hallucination_density() == 0.0
+
+def test_density_rejects_non_positive_chunk() -> None:
+    response = AntiHallucinationResponse(content="some words")
+    with pytest.raises(ValueError, match="per_words"):
+        response.hallucination_density(per_words=0)
+
+def test_density_is_serialized() -> None:
+    import json as _json
+
+    response = AntiHallucinationResponse(
+        content="hello world",
+        hallucinations_caught=["wrong claim"],
+    )
+    payload = _json.loads(response.to_json())
+    assert payload["hallucination_density"] == 50.0
+
+def test_density_is_reported_in_markdown() -> None:
+    response = AntiHallucinationResponse(content="clean answer")
+    markdown = response.to_markdown()
+    assert "Hallucination density" in markdown

@@ -144,12 +144,28 @@ class AntiHallucinationResponse:
 
         return policy.evaluate(self)
 
+    def hallucination_density(self, per_words: int = 100) -> float:
+        """Score how densely hallucinations occur per chunk of response text.
+
+        The density is the number of hallucinated claims caught per
+        ``per_words`` words of the final response, so shorter answers are not
+        unfairly penalised for a single mistake. An empty response scores
+        zero.
+        """
+        if per_words <= 0:
+            raise ValueError("per_words must be positive")
+        words = len(self.content.split())
+        if not words:
+            return 0.0
+        return len(self.hallucinations_caught) / words * per_words
+
     def to_dict(self) -> Dict[str, Any]:
         """Serialize the response to a plain dictionary."""
         return {
             "content": self.content,
             "hallucinations_caught": self.hallucinations_caught,
             "verification_log": self.verification_log,
+            "hallucination_density": round(self.hallucination_density(), 3),
             "token_usage": {
                 "prompt_tokens": self.token_usage.prompt_tokens,
                 "completion_tokens": self.token_usage.completion_tokens,
@@ -197,6 +213,10 @@ class AntiHallucinationResponse:
         lines.append(f"- **Tokens used**: {self.token_usage.total_tokens}")
         lines.append(f"- **Duration**: {self.elapsed_seconds:.2f}s")
         lines.append(f"- **Hallucinations caught**: {len(self.hallucinations_caught)}")
+        lines.append(
+            f"- **Hallucination density**: {self.hallucination_density():.2f} "
+            "per 100 words"
+        )
         lines.append("")
 
         if self.hallucinations_caught:
