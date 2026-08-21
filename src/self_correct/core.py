@@ -159,6 +159,21 @@ class AntiHallucinationResponse:
             return 0.0
         return len(self.hallucinations_caught) / words * per_words
 
+    def claim_summary(self) -> Dict[str, int]:
+        """Summarise verification verdicts from the claim log.
+
+        Returns counts for verified and flagged claims plus how many were
+        checked against external evidence. Log entries that carry phase
+        metadata rather than a per-claim verdict are ignored.
+        """
+        verdicts = [entry for entry in self.verification_log if "is_valid" in entry]
+        return {
+            "total_claims": len(verdicts),
+            "verified_claims": sum(bool(entry.get("is_valid")) for entry in verdicts),
+            "flagged_claims": sum(not bool(entry.get("is_valid")) for entry in verdicts),
+            "evidence_claims": sum(bool(entry.get("evidence_used")) for entry in verdicts),
+        }
+
     def to_dict(self) -> Dict[str, Any]:
         """Serialize the response to a plain dictionary."""
         return {
@@ -166,6 +181,7 @@ class AntiHallucinationResponse:
             "hallucinations_caught": self.hallucinations_caught,
             "verification_log": self.verification_log,
             "hallucination_density": round(self.hallucination_density(), 3),
+            "claim_summary": self.claim_summary(),
             "token_usage": {
                 "prompt_tokens": self.token_usage.prompt_tokens,
                 "completion_tokens": self.token_usage.completion_tokens,

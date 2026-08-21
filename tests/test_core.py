@@ -813,3 +813,54 @@ def test_density_is_reported_in_markdown() -> None:
     response = AntiHallucinationResponse(content="clean answer")
     markdown = response.to_markdown()
     assert "Hallucination density" in markdown
+
+# ------------------------------------------------------------------
+# Claim verdict summary
+# ------------------------------------------------------------------
+
+def test_claim_summary_counts_verdicts() -> None:
+    response = AntiHallucinationResponse(
+        content="text",
+        verification_log=[
+            {"claim": "a", "is_valid": True, "evidence_used": True, "critique": ""},
+            {"claim": "b", "is_valid": False, "evidence_used": True, "critique": "no"},
+            {"claim": "c", "is_valid": True, "evidence_used": False, "critique": ""},
+        ],
+    )
+    assert response.claim_summary() == {
+        "total_claims": 3,
+        "verified_claims": 2,
+        "flagged_claims": 1,
+        "evidence_claims": 2,
+    }
+
+def test_claim_summary_ignores_phase_entries() -> None:
+    response = AntiHallucinationResponse(
+        content="text",
+        verification_log=[
+            {"phase": "extraction", "warning": "No claims extracted."},
+            {"claim": "a", "is_valid": True, "evidence_used": False, "critique": ""},
+        ],
+    )
+    assert response.claim_summary()["total_claims"] == 1
+
+def test_claim_summary_empty_log() -> None:
+    response = AntiHallucinationResponse(content="text")
+    assert response.claim_summary() == {
+        "total_claims": 0,
+        "verified_claims": 0,
+        "flagged_claims": 0,
+        "evidence_claims": 0,
+    }
+
+def test_claim_summary_is_serialized() -> None:
+    import json as _json
+
+    response = AntiHallucinationResponse(
+        content="text",
+        verification_log=[
+            {"claim": "a", "is_valid": True, "evidence_used": False, "critique": ""},
+        ],
+    )
+    payload = _json.loads(response.to_json())
+    assert payload["claim_summary"]["verified_claims"] == 1
