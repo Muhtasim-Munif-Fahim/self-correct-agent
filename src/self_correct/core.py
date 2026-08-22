@@ -294,6 +294,7 @@ class VerificationPolicy:
     """Quality gate for deciding whether a verified response may ship."""
 
     min_verified_ratio: float = 1.0
+    min_verified_claims: int = 0
     max_flagged_claims: int = 0
     require_claims: bool = False
     min_evidence_ratio: float = 0.0
@@ -304,6 +305,7 @@ class VerificationPolicy:
             raise ValueError("verification policy must be a JSON object")
         allowed = {
             "min_verified_ratio",
+            "min_verified_claims",
             "max_flagged_claims",
             "require_claims",
             "min_evidence_ratio",
@@ -313,6 +315,7 @@ class VerificationPolicy:
             raise ValueError(f"unknown verification policy fields: {', '.join(unknown)}")
         return cls(
             min_verified_ratio=float(data.get("min_verified_ratio", 1.0)),
+            min_verified_claims=int(data.get("min_verified_claims", 0)),
             max_flagged_claims=int(data.get("max_flagged_claims", 0)),
             require_claims=bool(data.get("require_claims", False)),
             min_evidence_ratio=float(data.get("min_evidence_ratio", 0.0)),
@@ -330,6 +333,8 @@ class VerificationPolicy:
     def __post_init__(self) -> None:
         if not 0.0 <= self.min_verified_ratio <= 1.0:
             raise ValueError("min_verified_ratio must be between 0 and 1")
+        if self.min_verified_claims < 0:
+            raise ValueError("min_verified_claims must be non-negative")
         if self.max_flagged_claims < 0:
             raise ValueError("max_flagged_claims must be non-negative")
         if not 0.0 <= self.min_evidence_ratio <= 1.0:
@@ -350,6 +355,10 @@ class VerificationPolicy:
         if ratio < self.min_verified_ratio:
             reasons.append(
                 f"verified ratio {ratio:.1%} is below {self.min_verified_ratio:.1%}"
+            )
+        if verified < self.min_verified_claims:
+            reasons.append(
+                f"verified claims {verified} are below {self.min_verified_claims}"
             )
         if evidence_ratio < self.min_evidence_ratio:
             reasons.append(
