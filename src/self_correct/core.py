@@ -381,15 +381,20 @@ class VerificationPolicy:
             reasons.append(
                 f"flagged claims {flagged} exceed {self.max_flagged_claims}"
             )
-        density = response.hallucination_density()
         if (
             self.max_hallucination_density is not None
-            and density > self.max_hallucination_density
         ):
-            reasons.append(
-                f"hallucination density {density:.2f} exceeds "
-                f"{self.max_hallucination_density:.2f} per 100 words"
-            )
+            density_method = getattr(response, "hallucination_density", None)
+            if callable(density_method):
+                density = float(density_method())
+            else:
+                words = len(str(getattr(response, "content", "")).split())
+                density = len(response.hallucinations_caught) / words * 100 if words else 0.0
+            if density > self.max_hallucination_density:
+                reasons.append(
+                    f"hallucination density {density:.2f} exceeds "
+                    f"{self.max_hallucination_density:.2f} per 100 words"
+                )
         return VerificationDecision(
             passed=not reasons,
             verified_ratio=ratio,
