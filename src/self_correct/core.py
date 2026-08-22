@@ -771,15 +771,25 @@ class AntiHallucinator:
             separators=(",", ":"),
         )
 
-    def _search_evidence(self, claim: str, max_results: int = 3) -> str:
-        """Search all registered tools for evidence related to a claim."""
+    def _search_evidence(
+        self, claim: str, max_results: int = 3
+    ) -> tuple[str, List[Dict[str, str]]]:
+        """Search tools and return prompt-ready evidence plus source metadata."""
         evidence_parts: List[str] = []
+        evidence_sources: List[Dict[str, str]] = []
         for tool in self.tools:
             try:
                 results = tool.search(claim, max_results=max_results)
                 for r in results:
                     evidence_parts.append(
                         f"- [{r.title}]({r.url}): {r.snippet}"
+                    )
+                    evidence_sources.append(
+                        {
+                            "title": str(r.title),
+                            "url": str(r.url),
+                            "tool": str(getattr(tool, "name", type(tool).__name__)),
+                        }
                     )
             except Exception as exc:
                 logger.warning(
@@ -788,7 +798,7 @@ class AntiHallucinator:
                     claim[:50],
                     exc,
                 )
-        return "\n".join(evidence_parts)
+        return "\n".join(evidence_parts), evidence_sources
 
     def _verify_single_claim(
         self,
@@ -815,8 +825,9 @@ class AntiHallucinator:
             return {**cached, "cached": True}
 
         evidence_context = ""
+        evidence_sources: List[Dict[str, str]] = []
         if use_tools:
-            evidence_context = self._search_evidence(claim)
+            evidence_context, evidence_sources = self._search_evidence(claim)
 
         user_msg = f"Claim: {claim}"
         if evidence_context:
@@ -840,6 +851,7 @@ class AntiHallucinator:
             "is_valid": is_valid,
             "critique": critique,
             "evidence_used": bool(evidence_context),
+            "evidence_sources": evidence_sources,
             "cached": False,
         }
 
@@ -851,6 +863,7 @@ class AntiHallucinator:
                 "is_valid": is_valid,
                 "critique": critique,
                 "evidence_used": bool(evidence_context),
+                "evidence_sources": evidence_sources,
             },
             scope=cache_scope,
         )

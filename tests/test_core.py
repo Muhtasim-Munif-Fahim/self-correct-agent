@@ -535,6 +535,9 @@ def test_tools_used_at_high_strictness() -> None:
 
     mock_tool.search.assert_called_once()
     assert result.verification_log[0]["evidence_used"] is True
+    assert result.verification_log[0]["evidence_sources"] == [
+        {"title": "Page", "url": "https://x.com", "tool": "MockSearch"}
+    ]
 
 
 def test_tools_not_used_at_low_strictness() -> None:
