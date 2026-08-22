@@ -298,6 +298,7 @@ class VerificationPolicy:
     max_flagged_claims: int = 0
     require_claims: bool = False
     min_evidence_ratio: float = 0.0
+    max_hallucination_density: float | None = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "VerificationPolicy":
@@ -309,6 +310,7 @@ class VerificationPolicy:
             "max_flagged_claims",
             "require_claims",
             "min_evidence_ratio",
+            "max_hallucination_density",
         }
         unknown = sorted(set(data) - allowed)
         if unknown:
@@ -319,6 +321,11 @@ class VerificationPolicy:
             max_flagged_claims=int(data.get("max_flagged_claims", 0)),
             require_claims=bool(data.get("require_claims", False)),
             min_evidence_ratio=float(data.get("min_evidence_ratio", 0.0)),
+            max_hallucination_density=(
+                float(data["max_hallucination_density"])
+                if data.get("max_hallucination_density") is not None
+                else None
+            ),
         )
 
     @classmethod
@@ -339,6 +346,11 @@ class VerificationPolicy:
             raise ValueError("max_flagged_claims must be non-negative")
         if not 0.0 <= self.min_evidence_ratio <= 1.0:
             raise ValueError("min_evidence_ratio must be between 0 and 1")
+        if (
+            self.max_hallucination_density is not None
+            and self.max_hallucination_density < 0
+        ):
+            raise ValueError("max_hallucination_density must be non-negative")
 
     def evaluate(self, response: AntiHallucinationResponse) -> VerificationDecision:
         total = len(response.verification_log)
@@ -368,6 +380,15 @@ class VerificationPolicy:
         if flagged > self.max_flagged_claims:
             reasons.append(
                 f"flagged claims {flagged} exceed {self.max_flagged_claims}"
+            )
+        density = response.hallucination_density()
+        if (
+            self.max_hallucination_density is not None
+            and density > self.max_hallucination_density
+        ):
+            reasons.append(
+                f"hallucination density {density:.2f} exceeds "
+                f"{self.max_hallucination_density:.2f} per 100 words"
             )
         return VerificationDecision(
             passed=not reasons,
