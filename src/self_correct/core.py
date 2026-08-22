@@ -978,6 +978,29 @@ class AntiHallucinator:
             elapsed_seconds=time.monotonic() - start,
         )
 
+    def generate_many(
+        self,
+        model: str,
+        prompts: List[str],
+        max_tokens: int | None = None,
+    ) -> List[AntiHallucinationResponse]:
+        """Generate verified responses for a batch of prompts in input order.
+
+        Calls are deliberately ordered so callers can replay a batch with
+        deterministic provider usage and still benefit from the claim cache.
+        Use ``generate_async`` per prompt when lower latency matters more than
+        that reproducibility.
+        """
+        if isinstance(prompts, (str, bytes)):
+            raise TypeError("prompts must be a sequence of non-empty strings")
+        prompt_list = list(prompts)
+        if any(not isinstance(prompt, str) or not prompt.strip() for prompt in prompt_list):
+            raise ValueError("every prompt must be a non-empty string")
+        return [
+            self.generate(model=model, prompt=prompt, max_tokens=max_tokens)
+            for prompt in prompt_list
+        ]
+
     # ------------------------------------------------------------------
     # Public API: Asynchronous (parallel claim verification)
     # ------------------------------------------------------------------

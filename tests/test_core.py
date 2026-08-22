@@ -682,6 +682,29 @@ def test_generate_async_rejects_invalid_concurrency() -> None:
         asyncio.run(agent.generate_async("dummy", "prompt", max_concurrency=0))
 
 
+def test_generate_many_preserves_prompt_order_and_options() -> None:
+    agent = AntiHallucinator(MagicMock())
+    agent.generate = MagicMock(
+        side_effect=[
+            AntiHallucinationResponse(content="first"),
+            AntiHallucinationResponse(content="second"),
+        ]
+    )
+
+    results = agent.generate_many("dummy", ["Prompt one", "Prompt two"], max_tokens=64)
+
+    assert [result.content for result in results] == ["first", "second"]
+    assert agent.generate.call_args_list[0].kwargs == {
+        "model": "dummy", "prompt": "Prompt one", "max_tokens": 64
+    }
+
+
+def test_generate_many_rejects_empty_prompt_entries() -> None:
+    agent = AntiHallucinator(MagicMock())
+    with pytest.raises(ValueError, match="non-empty"):
+        agent.generate_many("dummy", ["valid", "  "])
+
+
 class TestClaimCacheTTL:
     """The claim cache may expire entries after a configurable interval."""
 
