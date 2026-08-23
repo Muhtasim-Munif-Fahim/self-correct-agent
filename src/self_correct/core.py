@@ -316,6 +316,7 @@ class VerificationPolicy:
     max_flagged_claims: int = 0
     require_claims: bool = False
     min_evidence_ratio: float = 0.0
+    min_evidence_claims: int = 0
     max_hallucination_density: float | None = None
 
     @classmethod
@@ -328,6 +329,7 @@ class VerificationPolicy:
             "max_flagged_claims",
             "require_claims",
             "min_evidence_ratio",
+            "min_evidence_claims",
             "max_hallucination_density",
         }
         unknown = sorted(set(data) - allowed)
@@ -339,6 +341,7 @@ class VerificationPolicy:
             max_flagged_claims=int(data.get("max_flagged_claims", 0)),
             require_claims=bool(data.get("require_claims", False)),
             min_evidence_ratio=float(data.get("min_evidence_ratio", 0.0)),
+            min_evidence_claims=int(data.get("min_evidence_claims", 0)),
             max_hallucination_density=(
                 float(data["max_hallucination_density"])
                 if data.get("max_hallucination_density") is not None
@@ -364,6 +367,8 @@ class VerificationPolicy:
             raise ValueError("max_flagged_claims must be non-negative")
         if not 0.0 <= self.min_evidence_ratio <= 1.0:
             raise ValueError("min_evidence_ratio must be between 0 and 1")
+        if self.min_evidence_claims < 0:
+            raise ValueError("min_evidence_claims must be non-negative")
         if (
             self.max_hallucination_density is not None
             and self.max_hallucination_density < 0
@@ -394,6 +399,10 @@ class VerificationPolicy:
             reasons.append(
                 f"evidence ratio {evidence_ratio:.1%} is below "
                 f"{self.min_evidence_ratio:.1%}"
+            )
+        if evidence_claims < self.min_evidence_claims:
+            reasons.append(
+                f"evidence-backed claims {evidence_claims} are below {self.min_evidence_claims}"
             )
         if flagged > self.max_flagged_claims:
             reasons.append(
