@@ -1054,6 +1054,39 @@ class AntiHallucinator:
             for prompt in prompt_list
         ]
 
+    async def generate_many_async(
+        self,
+        model: str,
+        prompts: List[str],
+        *,
+        max_concurrency: int | None = None,
+        prompt_concurrency: int | None = None,
+    ) -> List[AntiHallucinationResponse]:
+        """Verify a batch of prompts concurrently while preserving input order."""
+
+        if isinstance(prompts, (str, bytes)):
+            raise TypeError("prompts must be a sequence of non-empty strings")
+        prompt_list = list(prompts)
+        if any(not isinstance(prompt, str) or not prompt.strip() for prompt in prompt_list):
+            raise ValueError("every prompt must be a non-empty string")
+        if prompt_concurrency is not None and (
+            isinstance(prompt_concurrency, bool) or prompt_concurrency < 1
+        ):
+            raise ValueError("prompt_concurrency must be a positive integer or None")
+        semaphore = asyncio.Semaphore(prompt_concurrency) if prompt_concurrency else None
+
+        async def _generate(prompt: str) -> AntiHallucinationResponse:
+            if semaphore is None:
+                return await self.generate_async(
+                    model, prompt, max_concurrency=max_concurrency
+                )
+            async with semaphore:
+                return await self.generate_async(
+                    model, prompt, max_concurrency=max_concurrency
+                )
+
+        return list(await asyncio.gather(*[_generate(prompt) for prompt in prompt_list]))
+
     # ------------------------------------------------------------------
     # Public API: Asynchronous (parallel claim verification)
     # ------------------------------------------------------------------
