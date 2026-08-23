@@ -633,6 +633,7 @@ class AntiHallucinator:
         ),
         max_retries: int = 0,
         retry_backoff: float = 0.0,
+        max_evidence_results: int = 3,
     ) -> None:
         """
         Initialize the AntiHallucinator wrapper.
@@ -656,6 +657,8 @@ class AntiHallucinator:
             raise ValueError("max_retries must be a non-negative integer")
         if not math.isfinite(retry_backoff) or retry_backoff < 0:
             raise ValueError("retry_backoff must be a finite non-negative number")
+        if isinstance(max_evidence_results, bool) or max_evidence_results < 1:
+            raise ValueError("max_evidence_results must be a positive integer")
         self.client = client
         self.strictness = max(0.0, min(1.0, strictness))
         self.tools = tools or []
@@ -666,6 +669,7 @@ class AntiHallucinator:
         self._correction_prompt = correction_prompt
         self.max_retries = max_retries
         self.retry_backoff = retry_backoff
+        self.max_evidence_results = max_evidence_results
 
     @property
     def cache(self) -> _ClaimCache:
@@ -889,7 +893,9 @@ class AntiHallucinator:
         evidence_context = ""
         evidence_sources: List[Dict[str, str]] = []
         if use_tools:
-            evidence_context, evidence_sources = self._search_evidence(claim)
+            evidence_context, evidence_sources = self._search_evidence(
+                claim, max_results=self.max_evidence_results
+            )
 
         user_msg = f"Claim: {claim}"
         if evidence_context:

@@ -594,6 +594,29 @@ def test_tools_used_at_high_strictness() -> None:
     ]
 
 
+def test_tools_respect_configured_evidence_result_limit() -> None:
+    mock_client = MagicMock()
+    mock_tool = MagicMock()
+    mock_tool.name = "Search"
+    mock_tool.search.return_value = []
+    mock_client.chat.completions.create.side_effect = [
+        _mock_response("Claim."),
+        _mock_response("1. Claim."),
+        _mock_response("VERIFIED: True."),
+    ]
+
+    AntiHallucinator(
+        mock_client, strictness=1.0, tools=[mock_tool], max_evidence_results=1
+    ).generate(model="dummy", prompt="prompt")
+
+    assert mock_tool.search.call_args.kwargs["max_results"] == 1
+
+
+def test_evidence_result_limit_must_be_positive() -> None:
+    with pytest.raises(ValueError, match="max_evidence_results"):
+        AntiHallucinator(MagicMock(), max_evidence_results=0)
+
+
 def test_tools_not_used_at_low_strictness() -> None:
     mock_client = MagicMock()
     mock_tool = MagicMock()
