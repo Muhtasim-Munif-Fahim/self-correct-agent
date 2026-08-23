@@ -174,6 +174,23 @@ class AntiHallucinationResponse:
             "evidence_claims": sum(bool(entry.get("evidence_used")) for entry in verdicts),
         }
 
+    def evidence_summary(self) -> Dict[str, Any]:
+        """Summarize traceable external sources used across claim checks."""
+
+        sources = [
+            source
+            for entry in self.verification_log
+            for source in entry.get("evidence_sources", [])
+            if isinstance(source, dict)
+        ]
+        urls = {str(source["url"]) for source in sources if source.get("url")}
+        tools = sorted({str(source["tool"]) for source in sources if source.get("tool")})
+        return {
+            "source_count": len(sources),
+            "unique_url_count": len(urls),
+            "tools": tools,
+        }
+
     def to_dict(self) -> Dict[str, Any]:
         """Serialize the response to a plain dictionary."""
         return {
@@ -182,6 +199,7 @@ class AntiHallucinationResponse:
             "verification_log": self.verification_log,
             "hallucination_density": round(self.hallucination_density(), 3),
             "claim_summary": self.claim_summary(),
+            "evidence_summary": self.evidence_summary(),
             "token_usage": {
                 "prompt_tokens": self.token_usage.prompt_tokens,
                 "completion_tokens": self.token_usage.completion_tokens,

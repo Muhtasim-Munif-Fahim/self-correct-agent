@@ -928,3 +928,19 @@ def test_claim_summary_is_serialized() -> None:
     )
     payload = _json.loads(response.to_json())
     assert payload["claim_summary"]["verified_claims"] == 1
+
+
+def test_evidence_summary_deduplicates_source_urls_and_lists_tools() -> None:
+    response = AntiHallucinationResponse(
+        content="text",
+        verification_log=[
+            {"evidence_sources": [{"url": "https://a", "tool": "Search"}]},
+            {"evidence_sources": [{"url": "https://a", "tool": "Search"}, {"url": "https://b", "tool": "Archive"}]},
+        ],
+    )
+    assert response.evidence_summary() == {
+        "source_count": 3,
+        "unique_url_count": 2,
+        "tools": ["Archive", "Search"],
+    }
+    assert response.to_dict()["evidence_summary"]["source_count"] == 3
