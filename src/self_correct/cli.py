@@ -366,6 +366,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Apply JSON-defined content checks to each item's final text",
     )
     batch.add_argument(
+        "--resume-from", default=None, metavar="PATH",
+        help=(
+            "Reuse completed records from a previous output file and "
+            "retry only failed or missing items"
+        ),
+    )
+    batch.add_argument(
         "--format", choices=["json", "jsonl"], default="jsonl",
         help="Output format (default: jsonl)",
     )
@@ -1196,6 +1203,47 @@ def _print_batch_schema(args: argparse.Namespace) -> None:
     print("`content`, so the output line count always matches the input.")
 
 
+def _load_prior_results(path: str) -> dict:
+    """Read a previous batch output file into an ``id -> record`` map.
+
+    Accepts both batch formats: one JSON object per line, or a single JSON
+    array. Later records win when an id repeats.
+    """
+
+    with open(path, "r", encoding="utf-8") as f:
+        content = f.read()
+    stripped = content.strip()
+    records: list = []
+    if stripped.startswith("["):
+        parsed = json.loads(stripped)
+        if not isinstance(parsed, list):
+            raise ValueError("prior batch output must contain a JSON array")
+        records = parsed
+    else:
+        for line_no, line in enumerate(stripped.splitlines(), 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"prior batch output '{path}' line {line_no} is not valid JSON: {exc}"
+                ) from exc
+
+    prior: dict = {}
+    for record in records:
+        if isinstance(record, dict) and record.get("id") is not None:
+            prior[str(record["id"])] = record
+    return prior
+
+
+def _is_completed(record: object) -> bool:
+    """A prior record counts as done unless it carries an error."""
+
+    return isinstance(record, dict) and "error" not in record
+
+
 def _build_batch_index(results: list) -> dict:
     """Summarise batch records into a per-item outcome index.
 
@@ -1252,6 +1300,16 @@ def cmd_batch(args: argparse.Namespace) -> None:
     if not args.input:
         raise SystemExit("batch: --input is required (or use --schema to see the output fields)")
 
+    prior_results: dict = {}
+    resumed = 0
+    resume_path = getattr(args, "resume_from", None)
+    if resume_path:
+        try:
+            prior_results = _load_prior_results(resume_path)
+        except (OSError, ValueError) as exc:
+            print(f"batch: {exc}", file=sys.stderr)
+            return 2
+
     from openai import OpenAI
 
     tools = []
@@ -1307,6 +1365,14 @@ def cmd_batch(args: argparse.Namespace) -> None:
                 print(f"  [{idx}/{total}] Skipping item '{item_id}': no prompt", file=sys.stderr)
             continue
 
+        prior_record = prior_results.get(str(item_id))
+        if prior_record is not None and _is_completed(prior_record):
+            results.append(prior_record)
+            resumed += 1
+            if not getattr(args, "quiet", False):
+                print(f"  [{idx}/{total}] '{item_id}' already done", file=sys.stderr)
+            continue
+
         if not getattr(args, "quiet", False):
             print(f"  [{idx}/{total}] Processing '{item_id}'...", file=sys.stderr)
         try:
@@ -1356,7 +1422,10 @@ def cmd_batch(args: argparse.Namespace) -> None:
     # Summary to stderr
     errors = sum(1 for r in results if "error" in r)
     if not getattr(args, "quiet", False):
-        print(f"Done: {len(results)} processed, {errors} error(s).", file=sys.stderr)
+        summary = f"Done: {len(results)} processed"
+        if resumed:
+            summary += f" ({resumed} resumed)"
+        print(summary + f", {errors} error(s).", file=sys.stderr)
     flagged = sum(bool(r.get("hallucinations_caught")) for r in results)
     return 1 if getattr(args, "fail_on_hallucination", False) and flagged else 0
 
