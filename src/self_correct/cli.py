@@ -344,6 +344,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Cap LLM API calls per item; later claims are logged as skipped",
     )
     batch.add_argument(
+        "--index", default=None, metavar="PATH",
+        help="Write a JSON index of per-item outcomes next to the results",
+    )
+    batch.add_argument(
         "--format", choices=["json", "jsonl"], default="jsonl",
         help="Output format (default: jsonl)",
     )
@@ -1163,6 +1167,52 @@ def _print_batch_schema(args: argparse.Namespace) -> None:
     print("`content`, so the output line count always matches the input.")
 
 
+def _build_batch_index(results: list) -> dict:
+    """Summarise batch records into a per-item outcome index.
+
+    ``position`` points at the record's location in the results file: its
+    line number in JSONL mode (0-based) or array index in JSON mode.
+    """
+
+    items: list[dict] = []
+    for position, record in enumerate(results):
+        error = record.get("error")
+        if error:
+            status = "error"
+        elif record.get("hallucinations_caught"):
+            status = "flagged"
+        else:
+            status = "clean"
+        item = {
+            "id": record.get("id"),
+            "position": position,
+            "status": status,
+        }
+        if error:
+            item["error"] = str(error)
+        else:
+            summary = record.get("claim_summary") or {}
+            log = record.get("verification_log") or []
+            verdicts = [
+                entry for entry in log if isinstance(entry, dict) and "is_valid" in entry
+            ]
+            total = summary.get("total_claims")
+            if total is None:
+                total = len(verdicts)
+            verified = summary.get("verified_claims")
+            if verified is None:
+                verified = sum(bool(entry.get("is_valid")) for entry in verdicts)
+            item["claims_total"] = int(total)
+            item["claims_verified"] = int(verified)
+            item["flagged_count"] = len(record.get("hallucinations_caught") or [])
+        items.append(item)
+
+    counts = {name: 0 for name in ("clean", "flagged", "error")}
+    for item in items:
+        counts[item["status"]] += 1
+    return {"summary": {"total": len(items), **counts}, "items": items}
+
+
 def cmd_batch(args: argparse.Namespace) -> None:
     """Execute the batch subcommand: process a JSONL file."""
     if getattr(args, "schema", False):
@@ -1223,8 +1273,9 @@ def cmd_batch(args: argparse.Namespace) -> None:
             print(f"  [{idx}/{total}] Processing '{item_id}'...", file=sys.stderr)
         try:
             generate_kwargs = {"model": args.model, "prompt": prompt}
-            if args.max_tokens is not None:
-                generate_kwargs["max_tokens"] = args.max_tokens
+            max_tokens = getattr(args, "max_tokens", None)
+            if max_tokens is not None:
+                generate_kwargs["max_tokens"] = max_tokens
             result = hallu.generate(**generate_kwargs)
             result_dict = result.to_dict()
             result_dict["id"] = item_id
@@ -1256,6 +1307,13 @@ def cmd_batch(args: argparse.Namespace) -> None:
             print(f"Batch results written to {args.output}", file=sys.stderr)
     else:
         print(output)
+
+    index_path = getattr(args, "index", None)
+    if index_path:
+        with open(index_path, "w", encoding="utf-8") as f:
+            f.write(json.dumps(_build_batch_index(results), ensure_ascii=False, indent=2) + "\n")
+        if not getattr(args, "quiet", False):
+            print(f"Batch index written to {index_path}", file=sys.stderr)
 
     # Summary to stderr
     errors = sum(1 for r in results if "error" in r)
