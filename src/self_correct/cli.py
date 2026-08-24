@@ -240,6 +240,20 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Model to price token differences with (default: read from the results)",
     )
 
+    session_diff_parser = sub.add_parser(
+        "session-diff",
+        help="Compare claim verdicts between two saved sessions",
+    )
+    session_diff_parser.add_argument("baseline", help="Earlier session JSON")
+    session_diff_parser.add_argument("current", help="Later session JSON")
+    session_diff_parser.add_argument(
+        "--json", action="store_true", help="Print the comparison as JSON"
+    )
+    session_diff_parser.add_argument(
+        "--fail-on-regression", action="store_true",
+        help="Exit with status 1 when a verified claim regressed to flagged",
+    )
+
     template_parser = sub.add_parser(
         "template", aliases=["prompt"],
         help="List, show and render built-in and user prompt templates",
@@ -857,6 +871,54 @@ def _cmd_history(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_session_diff(args: argparse.Namespace) -> int:
+    """Compare claim verdicts across two sessions written by --save-session."""
+
+    baseline, error = None, None
+    try:
+        baseline = sessions.load_session(args.baseline)
+    except ValueError as exc:
+        error = str(exc)
+    if error:
+        print(f"session-diff: {error}", file=sys.stderr)
+        return 2
+    try:
+        current = sessions.load_session(args.current)
+    except ValueError as exc:
+        print(f"session-diff: {exc}", file=sys.stderr)
+        return 2
+
+    diff = sessions.diff_sessions(baseline, current)
+
+    if args.json:
+        print(json.dumps(diff, indent=2))
+    else:
+        print(
+            f"Baseline claims: {diff['baseline_claims']}   "
+            f"Current claims: {diff['current_claims']}"
+        )
+        print()
+        for label, key in (
+            ("Resolved (flagged -> verified)", "resolved"),
+            ("Regressed (verified -> flagged)", "regressed"),
+            ("Added in current", "added"),
+            ("Removed", "removed"),
+        ):
+            claims = diff[key]
+            print(f"{label}: {len(claims)}")
+            for claim in claims:
+                print(f"  - {claim}")
+        print()
+        print(
+            f"Unchanged: {diff['unchanged_verified']} verified / "
+            f"{diff['unchanged_flagged']} flagged"
+        )
+
+    if getattr(args, "fail_on_regression", False) and diff["regressed"]:
+        return 1
+    return 0
+
+
 def _cmd_template(args: argparse.Namespace) -> int:
     """List, show or render a prompt template."""
     if args.template_command == "list":
@@ -1249,6 +1311,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         return _cmd_template(args)
     elif args.command in ("compare", "diff"):
         return _cmd_compare(args)
+    elif args.command == "session-diff":
+        return _cmd_session_diff(args)
     elif args.command == "stats":
         return _cmd_stats(args)
     elif args.command == "cache":

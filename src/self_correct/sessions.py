@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Dict, Mapping
 
 SESSION_SCHEMA_VERSION = 1
 
@@ -58,3 +58,45 @@ def load_session(path: str | Path) -> dict[str, Any]:
     if not isinstance(payload.get("result"), dict):
         raise ValueError("session result must be a JSON object")
     return payload
+
+
+def _verdict_map(payload: Mapping[str, Any]) -> Dict[str, bool]:
+    """Map normalized claim text to its verdict from a session or result."""
+
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        result = payload
+    verdicts: Dict[str, bool] = {}
+    for entry in result.get("verification_log") or []:
+        if not isinstance(entry, dict):
+            continue
+        if "is_valid" not in entry or not entry.get("claim"):
+            continue
+        verdicts[str(entry["claim"]).strip().lower()] = bool(entry["is_valid"])
+    return verdicts
+
+
+def diff_sessions(
+    baseline: Mapping[str, Any], current: Mapping[str, Any]
+) -> Dict[str, Any]:
+    """Compare per-claim verdicts between two saved verification runs.
+
+    Claims are matched by normalized text, mirroring the claim-cache keying,
+    so reworded whitespace or casing does not hide an unchanged claim.
+    Accepts full sessions (as written by :func:`save_session`) or the bare
+    result objects they embed.
+    """
+
+    before = _verdict_map(baseline)
+    after = _verdict_map(current)
+    shared = set(before) & set(after)
+    return {
+        "resolved": sorted(c for c in shared if not before[c] and after[c]),
+        "regressed": sorted(c for c in shared if before[c] and not after[c]),
+        "added": sorted(set(after) - set(before)),
+        "removed": sorted(set(before) - set(after)),
+        "unchanged_verified": sum(1 for c in shared if before[c] and after[c]),
+        "unchanged_flagged": sum(1 for c in shared if not before[c] and not after[c]),
+        "baseline_claims": len(before),
+        "current_claims": len(after),
+    }
