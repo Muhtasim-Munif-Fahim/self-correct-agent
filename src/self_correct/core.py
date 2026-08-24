@@ -23,6 +23,7 @@ import math
 import re
 import threading
 import time
+from abc import ABC, abstractmethod
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -568,6 +569,96 @@ class VerificationPolicy:
         )
 
 
+class ContentCheck(ABC):
+    """Interface for user-defined checks applied to generated content.
+
+    A check inspects the pipeline's final text and returns one message per
+    violation. Findings are folded into the verification log as flagged
+    verdicts, so release policies, summaries, and exit-code gates treat
+    them exactly like rejected factual claims.
+    """
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """Human-readable name used in reports and log entries."""
+
+    @abstractmethod
+    def check(self, content: str) -> List[str]:
+        """Return a message per violation found in ``content``."""
+
+
+class RegexContentCheck(ContentCheck):
+    """Flag content matching a regular expression."""
+
+    #: Upper bound on reported matches so one hot pattern cannot flood the log.
+    MAX_FINDINGS = 10
+
+    def __init__(self, name: str, pattern: str, flags: int = 0) -> None:
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("content check name must be a non-empty string")
+        self._name = name
+        self._regex = re.compile(pattern, flags)
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def check(self, content: str) -> List[str]:
+        return [
+            match.group(0)
+            for match in self._regex.finditer(content or "")
+            ][: self.MAX_FINDINGS]
+
+
+#: Flag names accepted in a checks file, mapped onto ``re`` constants.
+_REGEX_FLAG_NAMES = {
+    "IGNORECASE": re.IGNORECASE,
+    "MULTILINE": re.MULTILINE,
+    "DOTALL": re.DOTALL,
+    "ASCII": re.ASCII,
+}
+
+
+def load_content_checks(path: str | Path) -> List[ContentCheck]:
+    """Build content checks from a JSON definition file.
+
+    The file contains ``{"checks": [...]}``; every entry needs a ``type``
+    (only ``regex`` ships built-in), a non-empty ``name``, and for regex
+    checks a ``pattern`` plus optional ``flags`` drawn from
+    :data:`_REGEX_FLAG_NAMES`.
+    """
+
+    source = Path(path)
+    try:
+        payload = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read content checks '{source}': {exc}") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("checks"), list):
+        raise ValueError("content checks file must contain a 'checks' list")
+
+    checks: List[ContentCheck] = []
+    for entry in payload["checks"]:
+        if not isinstance(entry, dict):
+            raise ValueError("every content check must be a JSON object")
+        kind = entry.get("type", "regex")
+        if kind != "regex":
+            raise ValueError(f"unknown content check type: {kind!r}")
+        flags = 0
+        for flag_name in entry.get("flags") or []:
+            if flag_name not in _REGEX_FLAG_NAMES:
+                raise ValueError(f"unknown regex flag: {flag_name!r}")
+            flags |= _REGEX_FLAG_NAMES[flag_name]
+        checks.append(
+            RegexContentCheck(
+                name=entry.get("name"),
+                pattern=entry.get("pattern"),
+                flags=flags,
+            )
+        )
+    return checks
+
+
 # ------------------------------------------------------------------
 # LRU Claim Cache
 # ------------------------------------------------------------------
@@ -769,6 +860,7 @@ class AntiHallucinator:
         retry_backoff: float = 0.0,
         max_evidence_results: int = 3,
         max_llm_calls: Optional[int] = None,
+        content_checks: Optional[List[ContentCheck]] = None,
     ) -> None:
         """
         Initialize the AntiHallucinator wrapper.
@@ -802,6 +894,10 @@ class AntiHallucinator:
             isinstance(max_llm_calls, bool) or not isinstance(max_llm_calls, int) or max_llm_calls < 1
         ):
             raise ValueError("max_llm_calls must be a positive integer or None")
+        if content_checks is not None and not all(
+            isinstance(check, ContentCheck) for check in content_checks
+        ):
+            raise ValueError("content_checks must contain ContentCheck instances")
         self.client = client
         self.strictness = max(0.0, min(1.0, strictness))
         self.tools = tools or []
@@ -814,6 +910,7 @@ class AntiHallucinator:
         self.retry_backoff = retry_backoff
         self.max_evidence_results = max_evidence_results
         self.max_llm_calls = max_llm_calls
+        self.content_checks: List[ContentCheck] = list(content_checks or [])
 
     @property
     def cache(self) -> _ClaimCache:
@@ -1082,6 +1179,34 @@ class AntiHallucinator:
 
         return result
 
+    def _apply_content_checks(self, response: AntiHallucinationResponse) -> None:
+        """Fold content-check findings into a response as flagged verdicts.
+
+        A check that raises is skipped with a warning: an auxiliary check
+        must not destroy an otherwise completed verification.
+        """
+        for check in self.content_checks:
+            try:
+                findings = check.check(response.content)
+            except Exception as exc:
+                logger.warning(
+                    "Content check '%s' failed: %s",
+                    getattr(check, "name", type(check).__name__),
+                    exc,
+                )
+                continue
+            for finding in findings:
+                message = str(finding)
+                response.verification_log.append({
+                    "claim": f"content:{check.name}",
+                    "is_valid": False,
+                    "critique": message,
+                    "content_check": check.name,
+                })
+                response.hallucinations_caught.append(
+                    f"Content check '{check.name}' flagged: {message}"
+                )
+
     # ------------------------------------------------------------------
     # Public API: Synchronous
     # ------------------------------------------------------------------
@@ -1091,8 +1216,18 @@ class AntiHallucinator:
         Generate text with automatic hallucination detection and correction.
 
         This is the synchronous entry point. For parallel claim verification,
-        use ``generate_async()`` instead.
+        use ``generate_async()`` instead. When ``strictness > 0`` and content
+        checks are configured, every returned response has been audited by
+        them first.
         """
+        response = self._generate_sync(model, prompt, max_tokens)
+        if self.strictness > 0.0:
+            self._apply_content_checks(response)
+        return response
+
+    def _generate_sync(
+        self, model: str, prompt: str, max_tokens: int | None = None
+    ) -> AntiHallucinationResponse:
         start = time.monotonic()
         usage = TokenUsage()
         budget = _CallBudget(self.max_llm_calls) if self.max_llm_calls else None
@@ -1297,6 +1432,16 @@ class AntiHallucinator:
             import asyncio
             result = asyncio.run(safe_client.generate_async(model, prompt))
         """
+        response = await self._generate_async_impl(
+            model, prompt, max_concurrency=max_concurrency
+        )
+        if self.strictness > 0.0:
+            self._apply_content_checks(response)
+        return response
+
+    async def _generate_async_impl(
+        self, model: str, prompt: str, *, max_concurrency: int | None = None
+    ) -> AntiHallucinationResponse:
         if max_concurrency is not None and (
             isinstance(max_concurrency, bool) or max_concurrency < 1
         ):

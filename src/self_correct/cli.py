@@ -20,7 +20,13 @@ from pathlib import Path
 from typing import Optional
 
 from . import history, sessions, templates
-from .core import MODEL_PRICING, AntiHallucinator, VerificationPolicy, model_pricing
+from .core import (
+    MODEL_PRICING,
+    AntiHallucinator,
+    VerificationPolicy,
+    load_content_checks,
+    model_pricing,
+)
 from .tools import DuckDuckGoSearchTool, WikipediaSearchTool
 
 
@@ -107,6 +113,10 @@ def _build_parser() -> argparse.ArgumentParser:
     verify.add_argument(
         "--max-calls", type=int, default=None, metavar="N",
         help="Cap LLM API calls for this run; later claims are logged as skipped",
+    )
+    verify.add_argument(
+        "--checks", default=None, metavar="PATH",
+        help="Apply JSON-defined content checks to the final text",
     )
     verify.add_argument(
         "--provider", choices=["openai", "ollama", "custom"], default="openai",
@@ -196,6 +206,10 @@ def _build_parser() -> argparse.ArgumentParser:
     resume.add_argument(
         "--max-calls", type=int, default=None,
         help="Override the saved LLM call budget",
+    )
+    resume.add_argument(
+        "--checks", default=None, metavar="PATH",
+        help="Apply JSON-defined content checks to the final text",
     )
 
     # tools subcommand
@@ -346,6 +360,10 @@ def _build_parser() -> argparse.ArgumentParser:
     batch.add_argument(
         "--index", default=None, metavar="PATH",
         help="Write a JSON index of per-item outcomes next to the results",
+    )
+    batch.add_argument(
+        "--checks", default=None, metavar="PATH",
+        help="Apply JSON-defined content checks to each item's final text",
     )
     batch.add_argument(
         "--format", choices=["json", "jsonl"], default="jsonl",
@@ -551,6 +569,14 @@ def cmd_verify(args: argparse.Namespace) -> None:
         _print_dry_run_plan(args, prompt, tool_names)
         return
 
+    checks_path = getattr(args, "checks", None)
+    content_checks = None
+    if checks_path:
+        try:
+            content_checks = load_content_checks(checks_path)
+        except ValueError as exc:
+            raise SystemExit(f"--checks: {exc}")
+
     # The timeout belongs on the client so it covers every request the
     # verification pipeline makes, not just the first generation call.
     client = _build_client(args)
@@ -570,6 +596,7 @@ def cmd_verify(args: argparse.Namespace) -> None:
         max_retries=getattr(args, "max_retries", 0),
         retry_backoff=getattr(args, "retry_backoff", 0.0),
         max_llm_calls=getattr(args, "max_calls", None),
+        content_checks=content_checks,
     )
     cache_file = getattr(args, "cache_file", None)
     if cache_file and args.no_cache:
@@ -609,6 +636,7 @@ def cmd_verify(args: argparse.Namespace) -> None:
                 "max_retries": getattr(args, "max_retries", 0),
                 "retry_backoff": getattr(args, "retry_backoff", 0.0),
                 "max_calls": getattr(args, "max_calls", None),
+                "checks": getattr(args, "checks", None),
                 "timeout": getattr(args, "timeout", None),
                 "provider": getattr(args, "provider", "openai"),
                 "base_url": getattr(args, "base_url", None),
@@ -739,6 +767,7 @@ def _cmd_resume(args: argparse.Namespace) -> int | None:
             if args.max_calls is not None
             else config.get("max_calls")
         ),
+        checks=(args.checks if args.checks is not None else config.get("checks")),
         timeout=config.get("timeout"),
         provider=args.provider or config.get("provider", "openai"),
         base_url=(args.base_url if args.base_url is not None else config.get("base_url")),
@@ -1231,6 +1260,14 @@ def cmd_batch(args: argparse.Namespace) -> None:
     if "wikipedia" in args.tools:
         tools.append(WikipediaSearchTool())
 
+    batch_checks_path = getattr(args, "checks", None)
+    batch_checks = None
+    if batch_checks_path:
+        try:
+            batch_checks = load_content_checks(batch_checks_path)
+        except ValueError as exc:
+            raise SystemExit(f"--checks: {exc}")
+
     hallu = AntiHallucinator(
         client=OpenAI(),
         strictness=args.strictness,
@@ -1238,6 +1275,7 @@ def cmd_batch(args: argparse.Namespace) -> None:
         cache_size=0 if args.no_cache else 256,
         cache_ttl=getattr(args, "cache_ttl", None),
         max_llm_calls=getattr(args, "max_calls", None),
+        content_checks=batch_checks,
     )
 
     # Read input
