@@ -26,7 +26,7 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +83,50 @@ class _CallBudget:
                 return False
             self._used += 1
             return True
+
+
+#: Severity labels a flagged claim can carry.
+VALID_SEVERITIES = ("critical", "major", "minor")
+
+#: Ordered ``(regex, severity)`` rules applied to a flagged claim's critique;
+#: the first match wins and anything unmatched is ``minor``. Critical
+#: patterns assert the claim is actually wrong, major patterns flag claims
+#: that cannot be established either way.
+DEFAULT_SEVERITY_RULES = (
+    (
+        r"\bfalse\b|\bincorrect\b|\binaccurate\b|contradict\w*"
+        r"|fabricat\w*|misleading",
+        "critical",
+    ),
+    (
+        r"\bunverifiable\b|cannot be (?:verified|confirmed)|\bdisputed\b"
+        r"|\boutdated\b|\bunsupported\b|\bno evidence\b",
+        "major",
+    ),
+)
+
+
+def classify_severity(
+    text: str, rules: Optional[List[Tuple[str, str]]] = None
+) -> str:
+    """Classify a critique (or flagged-claim message) as a severity label.
+
+    Rules are ``(regex, severity)`` pairs scanned case-insensitively in
+    order; the first matching rule decides. Text matching nothing falls
+    back to ``minor``, so a custom rule set only needs to describe its
+    exceptions.
+    """
+    if rules is None:
+        rules = DEFAULT_SEVERITY_RULES
+    for pattern, severity in rules:
+        if severity not in VALID_SEVERITIES:
+            raise ValueError(
+                f"unknown severity {severity!r}; expected one of "
+                + ", ".join(VALID_SEVERITIES)
+            )
+        if re.search(pattern, text or "", re.IGNORECASE):
+            return severity
+    return "minor"
 
 
 # ------------------------------------------------------------------
@@ -197,6 +241,24 @@ class AntiHallucinationResponse:
             "evidence_claims": sum(bool(entry.get("evidence_used")) for entry in verdicts),
         }
 
+    def severity_summary(
+        self, rules: Optional[List[Tuple[str, str]]] = None
+    ) -> Dict[str, int]:
+        """Count flagged claims by severity class.
+
+        Every verdict entry whose claim was rejected contributes its
+        critique text to :func:`classify_severity`; phase entries and
+        verified claims are ignored. Pass ``rules`` to override the
+        default taxonomy.
+        """
+        counts = {severity: 0 for severity in VALID_SEVERITIES}
+        for entry in self.verification_log:
+            if entry.get("is_valid") is not False:
+                continue
+            severity = classify_severity(str(entry.get("critique", "")), rules)
+            counts[severity] += 1
+        return counts
+
     def budget_report(self) -> Dict[str, Any]:
         """Report which claims or phases an exhausted call budget skipped.
 
@@ -250,6 +312,7 @@ class AntiHallucinationResponse:
             "hallucination_density": round(self.hallucination_density(), 3),
             "claim_summary": self.claim_summary(),
             "budget": self.budget_report(),
+            "severity_summary": self.severity_summary(),
             "evidence_summary": self.evidence_summary(),
             "token_usage": {
                 "prompt_tokens": self.token_usage.prompt_tokens,
@@ -314,7 +377,7 @@ class AntiHallucinationResponse:
             lines.append("## Flagged Claims")
             lines.append("")
             for i, h in enumerate(self.hallucinations_caught, 1):
-                lines.append(f"{i}. {h}")
+                lines.append(f"{i}. [{classify_severity(h)}] {h}")
                 lines.append("")
 
         lines.append("## Final Output")
@@ -375,6 +438,7 @@ class VerificationPolicy:
     min_evidence_ratio: float = 0.0
     min_evidence_claims: int = 0
     max_hallucination_density: float | None = None
+    max_critical_claims: int = 0
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "VerificationPolicy":
@@ -388,6 +452,7 @@ class VerificationPolicy:
             "min_evidence_ratio",
             "min_evidence_claims",
             "max_hallucination_density",
+            "max_critical_claims",
         }
         unknown = sorted(set(data) - allowed)
         if unknown:
@@ -404,6 +469,7 @@ class VerificationPolicy:
                 if data.get("max_hallucination_density") is not None
                 else None
             ),
+            max_critical_claims=int(data.get("max_critical_claims", 0)),
         )
 
     @classmethod
@@ -431,6 +497,8 @@ class VerificationPolicy:
             and self.max_hallucination_density < 0
         ):
             raise ValueError("max_hallucination_density must be non-negative")
+        if self.max_critical_claims < 0:
+            raise ValueError("max_critical_claims must be non-negative")
 
     def evaluate(self, response: AntiHallucinationResponse) -> VerificationDecision:
         total = len(response.verification_log)
@@ -439,6 +507,11 @@ class VerificationPolicy:
             bool(entry.get("evidence_used")) for entry in response.verification_log
         )
         flagged = len(response.hallucinations_caught)
+        critical = sum(
+            classify_severity(str(entry.get("critique", ""))) == "critical"
+            for entry in response.verification_log
+            if entry.get("is_valid") is False
+        )
         ratio = verified / total if total else 1.0
         evidence_ratio = evidence_claims / total if total else 1.0
         reasons: List[str] = []
@@ -464,6 +537,10 @@ class VerificationPolicy:
         if flagged > self.max_flagged_claims:
             reasons.append(
                 f"flagged claims {flagged} exceed {self.max_flagged_claims}"
+            )
+        if critical > self.max_critical_claims:
+            reasons.append(
+                f"critical claims {critical} exceed {self.max_critical_claims}"
             )
         if (
             self.max_hallucination_density is not None
