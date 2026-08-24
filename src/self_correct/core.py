@@ -62,6 +62,29 @@ def model_pricing(model: str) -> Optional[tuple]:
     return MODEL_PRICING[max(candidates, key=len)]
 
 
+
+class _CallBudget:
+    """Thread-safe counter that caps LLM calls within one pipeline run.
+
+    Claim verifications can run concurrently, so acquiring a call slot has
+    to be atomic: a budget of N must never admit more than N calls even when
+    several threads try at once.
+    """
+
+    def __init__(self, limit: int) -> None:
+        self._limit = limit
+        self._used = 0
+        self._lock = threading.Lock()
+
+    def try_acquire(self) -> bool:
+        """Consume one call slot, returning False once the budget is spent."""
+        with self._lock:
+            if self._used >= self._limit:
+                return False
+            self._used += 1
+            return True
+
+
 # ------------------------------------------------------------------
 # Data classes
 # ------------------------------------------------------------------
@@ -174,6 +197,33 @@ class AntiHallucinationResponse:
             "evidence_claims": sum(bool(entry.get("evidence_used")) for entry in verdicts),
         }
 
+    def budget_report(self) -> Dict[str, Any]:
+        """Report which claims or phases an exhausted call budget skipped.
+
+        Log entries produced when the LLM call budget runs out carry a
+        ``skipped_by_budget`` marker; phase-level halts use a ``phase``
+        entry instead. Both are collected here so callers can see what was
+        left unverified without parsing the log themselves.
+        """
+        skipped_claims = [
+            str(entry["claim"])
+            for entry in self.verification_log
+            if entry.get("skipped_by_budget") and entry.get("claim")
+        ]
+        skipped_phases = [
+            str(entry["phase"])
+            for entry in self.verification_log
+            if entry.get("skipped_by_budget") and entry.get("phase")
+        ]
+        extraction_halted = any(
+            entry.get("phase") == "budget" for entry in self.verification_log
+        )
+        return {
+            "exhausted": bool(skipped_claims or skipped_phases or extraction_halted),
+            "skipped_claims": skipped_claims,
+            "skipped_phases": skipped_phases,
+        }
+
     def evidence_summary(self) -> Dict[str, Any]:
         """Summarize traceable external sources used across claim checks."""
 
@@ -199,6 +249,7 @@ class AntiHallucinationResponse:
             "verification_log": self.verification_log,
             "hallucination_density": round(self.hallucination_density(), 3),
             "claim_summary": self.claim_summary(),
+            "budget": self.budget_report(),
             "evidence_summary": self.evidence_summary(),
             "token_usage": {
                 "prompt_tokens": self.token_usage.prompt_tokens,
@@ -251,6 +302,12 @@ class AntiHallucinationResponse:
             f"- **Hallucination density**: {self.hallucination_density():.2f} "
             "per 100 words"
         )
+        report = self.budget_report()
+        if report["exhausted"]:
+            lines.append(
+                f"- **LLM call budget**: exhausted; "
+                f"{len(report['skipped_claims'])} claim(s) left unverified"
+            )
         lines.append("")
 
         if self.hallucinations_caught:
@@ -634,6 +691,7 @@ class AntiHallucinator:
         max_retries: int = 0,
         retry_backoff: float = 0.0,
         max_evidence_results: int = 3,
+        max_llm_calls: Optional[int] = None,
     ) -> None:
         """
         Initialize the AntiHallucinator wrapper.
@@ -652,6 +710,10 @@ class AntiHallucinator:
             Number of additional attempts after a failed provider call.
         retry_backoff : float
             Initial delay between retries; delays double for each attempt.
+        max_llm_calls : Optional[int]
+            Hard cap on LLM API calls for one run. Once spent, remaining
+            claims are logged as skipped instead of verified; cached claim
+            lookups do not consume the budget.
         """
         if isinstance(max_retries, bool) or max_retries < 0:
             raise ValueError("max_retries must be a non-negative integer")
@@ -659,6 +721,10 @@ class AntiHallucinator:
             raise ValueError("retry_backoff must be a finite non-negative number")
         if isinstance(max_evidence_results, bool) or max_evidence_results < 1:
             raise ValueError("max_evidence_results must be a positive integer")
+        if max_llm_calls is not None and (
+            isinstance(max_llm_calls, bool) or not isinstance(max_llm_calls, int) or max_llm_calls < 1
+        ):
+            raise ValueError("max_llm_calls must be a positive integer or None")
         self.client = client
         self.strictness = max(0.0, min(1.0, strictness))
         self.tools = tools or []
@@ -670,6 +736,7 @@ class AntiHallucinator:
         self.max_retries = max_retries
         self.retry_backoff = retry_backoff
         self.max_evidence_results = max_evidence_results
+        self.max_llm_calls = max_llm_calls
 
     @property
     def cache(self) -> _ClaimCache:
@@ -951,8 +1018,12 @@ class AntiHallucinator:
         """
         start = time.monotonic()
         usage = TokenUsage()
+        budget = _CallBudget(self.max_llm_calls) if self.max_llm_calls else None
 
-        # Phase 1: Drafting
+        # Phase 1: Drafting. The budget is validated to admit at least one
+        # call, so the first acquisition cannot fail.
+        if budget is not None and not budget.try_acquire():
+            raise RuntimeError("LLM call budget exhausted before drafting")
         draft = self._call_llm(
             model=model,
             system_prompt=self._draft_system_prompt,
@@ -970,6 +1041,17 @@ class AntiHallucinator:
             )
 
         # Phase 2: Fact Extraction
+        if budget is not None and not budget.try_acquire():
+            return AntiHallucinationResponse(
+                content=draft,
+                verification_log=[{
+                    "phase": "budget",
+                    "skipped_by_budget": True,
+                    "detail": "extraction skipped: LLM call budget reached",
+                }],
+                token_usage=usage,
+                elapsed_seconds=time.monotonic() - start,
+            )
         claims_text = self._call_llm(
             model=model,
             system_prompt=self._extraction_prompt,
@@ -1002,6 +1084,13 @@ class AntiHallucinator:
         hallucinations_caught: List[str] = []
 
         for claim in claims:
+            if budget is not None and not budget.try_acquire():
+                verification_log.append({
+                    "claim": claim,
+                    "skipped_by_budget": True,
+                    "critique": "not verified: LLM call budget reached",
+                })
+                continue
             result = self._verify_single_claim(
                 claim,
                 model,
@@ -1022,6 +1111,16 @@ class AntiHallucinator:
             return AntiHallucinationResponse(
                 content=draft,
                 verification_log=verification_log,
+                token_usage=usage,
+                elapsed_seconds=time.monotonic() - start,
+            )
+
+        if budget is not None and not budget.try_acquire():
+            return AntiHallucinationResponse(
+                content=draft,
+                hallucinations_caught=hallucinations_caught,
+                verification_log=verification_log
+                + [{"phase": "correction", "skipped_by_budget": True}],
                 token_usage=usage,
                 elapsed_seconds=time.monotonic() - start,
             )
@@ -1128,8 +1227,11 @@ class AntiHallucinator:
 
         start = time.monotonic()
         usage = TokenUsage()
+        budget = _CallBudget(self.max_llm_calls) if self.max_llm_calls else None
 
         # Phase 1 & 2 are sequential (need the draft before extraction)
+        if budget is not None and not budget.try_acquire():
+            raise RuntimeError("LLM call budget exhausted before drafting")
         draft = await asyncio.to_thread(
             self._call_llm, model, self._draft_system_prompt, prompt, usage
         )
@@ -1138,6 +1240,18 @@ class AntiHallucinator:
             return AntiHallucinationResponse(
                 content=draft,
                 verification_log=[{"phase": "bypassed", "reason": "strictness=0.0"}],
+                token_usage=usage,
+                elapsed_seconds=time.monotonic() - start,
+            )
+
+        if budget is not None and not budget.try_acquire():
+            return AntiHallucinationResponse(
+                content=draft,
+                verification_log=[{
+                    "phase": "budget",
+                    "skipped_by_budget": True,
+                    "detail": "extraction skipped: LLM call budget reached",
+                }],
                 token_usage=usage,
                 elapsed_seconds=time.monotonic() - start,
             )
@@ -1170,7 +1284,16 @@ class AntiHallucinator:
         cache_scope = self._cache_scope(model, critique_prompt, use_tools)
         semaphore = asyncio.Semaphore(max_concurrency) if max_concurrency else None
 
+        def _skip(claim: str) -> Dict[str, Any]:
+            return {
+                "claim": claim,
+                "skipped_by_budget": True,
+                "critique": "not verified: LLM call budget reached",
+            }
+
         async def _verify(claim: str) -> Dict[str, Any]:
+            if budget is not None and not budget.try_acquire():
+                return _skip(claim)
             if semaphore is None:
                 return await asyncio.to_thread(
                     self._verify_single_claim,
@@ -1200,7 +1323,7 @@ class AntiHallucinator:
         hallucinations_caught = [
             f"Claim '{r['claim']}' flagged: {r['critique']}"
             for r in verification_log
-            if not r["is_valid"]
+            if r.get("is_valid") is False
         ]
 
         # Phase 4: Correction
@@ -1208,6 +1331,16 @@ class AntiHallucinator:
             return AntiHallucinationResponse(
                 content=draft,
                 verification_log=verification_log,
+                token_usage=usage,
+                elapsed_seconds=time.monotonic() - start,
+            )
+
+        if budget is not None and not budget.try_acquire():
+            return AntiHallucinationResponse(
+                content=draft,
+                hallucinations_caught=hallucinations_caught,
+                verification_log=verification_log
+                + [{"phase": "correction", "skipped_by_budget": True}],
                 token_usage=usage,
                 elapsed_seconds=time.monotonic() - start,
             )

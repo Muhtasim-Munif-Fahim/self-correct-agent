@@ -105,6 +105,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Abort the run if the API does not respond within SECONDS",
     )
     verify.add_argument(
+        "--max-calls", type=int, default=None, metavar="N",
+        help="Cap LLM API calls for this run; later claims are logged as skipped",
+    )
+    verify.add_argument(
         "--provider", choices=["openai", "ollama", "custom"], default="openai",
         help="Where to send requests (default: openai)",
     )
@@ -188,6 +192,10 @@ def _build_parser() -> argparse.ArgumentParser:
     resume.add_argument(
         "--retry-backoff", type=float, default=None, metavar="SECONDS",
         help="Override the saved retry backoff",
+    )
+    resume.add_argument(
+        "--max-calls", type=int, default=None,
+        help="Override the saved LLM call budget",
     )
 
     # tools subcommand
@@ -316,6 +324,10 @@ def _build_parser() -> argparse.ArgumentParser:
     batch.add_argument(
         "--delay", type=float, default=0.0,
         help="Delay in seconds between items (to avoid rate limits)",
+    )
+    batch.add_argument(
+        "--max-calls", type=int, default=None, metavar="N",
+        help="Cap LLM API calls per item; later claims are logged as skipped",
     )
     batch.add_argument(
         "--format", choices=["json", "jsonl"], default="jsonl",
@@ -454,6 +466,8 @@ def _print_dry_run_plan(
           + (f" (ttl {args.cache_ttl}s)" if getattr(args, "cache_ttl", None) else ""))
     print(f"{'Max tokens':<18}{args.max_tokens if args.max_tokens is not None else 'model default'}")
     print(f"{'Timeout':<18}{f'{args.timeout}s' if getattr(args, 'timeout', None) else 'none'}")
+    max_calls = getattr(args, "max_calls", None)
+    print(f"{'Max calls':<18}{max_calls if max_calls is not None else 'unlimited'}")
     print(f"{'Output':<18}{args.output or 'stdout'}"
           f" ({_detect_output_format(args.output, args.output_format)})")
     print()
@@ -537,6 +551,7 @@ def cmd_verify(args: argparse.Namespace) -> None:
         cache_ttl=getattr(args, "cache_ttl", None),
         max_retries=getattr(args, "max_retries", 0),
         retry_backoff=getattr(args, "retry_backoff", 0.0),
+        max_llm_calls=getattr(args, "max_calls", None),
     )
     cache_file = getattr(args, "cache_file", None)
     if cache_file and args.no_cache:
@@ -575,6 +590,7 @@ def cmd_verify(args: argparse.Namespace) -> None:
                 "max_tokens": getattr(args, "max_tokens", None),
                 "max_retries": getattr(args, "max_retries", 0),
                 "retry_backoff": getattr(args, "retry_backoff", 0.0),
+                "max_calls": getattr(args, "max_calls", None),
                 "timeout": getattr(args, "timeout", None),
                 "provider": getattr(args, "provider", "openai"),
                 "base_url": getattr(args, "base_url", None),
@@ -699,6 +715,11 @@ def _cmd_resume(args: argparse.Namespace) -> int | None:
             args.retry_backoff
             if args.retry_backoff is not None
             else config.get("retry_backoff", 0.0)
+        ),
+        max_calls=(
+            args.max_calls
+            if args.max_calls is not None
+            else config.get("max_calls")
         ),
         timeout=config.get("timeout"),
         provider=args.provider or config.get("provider", "openai"),
@@ -1104,6 +1125,7 @@ def cmd_batch(args: argparse.Namespace) -> None:
         tools=tools or None,
         cache_size=0 if args.no_cache else 256,
         cache_ttl=getattr(args, "cache_ttl", None),
+        max_llm_calls=getattr(args, "max_calls", None),
     )
 
     # Read input
