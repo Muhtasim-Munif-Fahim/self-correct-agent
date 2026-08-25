@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from . import history, sessions, templates
+from . import history, junit, sessions, templates
 from .core import (
     MODEL_PRICING,
     AntiHallucinator,
@@ -266,6 +266,18 @@ def _build_parser() -> argparse.ArgumentParser:
     session_diff_parser.add_argument(
         "--fail-on-regression", action="store_true",
         help="Exit with status 1 when a verified claim regressed to flagged",
+    )
+
+    export_junit_parser = sub.add_parser(
+        "export-junit",
+        help="Export a saved session as JUnit XML for CI dashboards",
+    )
+    export_junit_parser.add_argument(
+        "session", help="Session JSON created by --save-session"
+    )
+    export_junit_parser.add_argument(
+        "--output", "-o", default=None,
+        help="Write the XML to a file instead of stdout",
     )
 
     template_parser = sub.add_parser(
@@ -791,6 +803,27 @@ def _cmd_resume(args: argparse.Namespace) -> int | None:
         quiet=getattr(args, "quiet", False),
     )
     return cmd_verify(verify_args)
+
+
+def _cmd_export_junit(args: argparse.Namespace) -> int:
+    """Export one saved session as JUnit XML for CI systems."""
+
+    try:
+        session = sessions.load_session(args.session)
+    except ValueError as exc:
+        print(f"export-junit: {exc}", file=sys.stderr)
+        return 2
+
+    xml_text = junit.result_to_junit_xml(session)
+    if args.output:
+        target = Path(args.output)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(xml_text + "\n", encoding="utf-8")
+        print(f"JUnit report written to {args.output}")
+    else:
+        print(xml_text)
+    return 0
+
 
 
 def cmd_estimate(args: argparse.Namespace) -> None:
@@ -1478,6 +1511,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         return _cmd_compare(args)
     elif args.command == "session-diff":
         return _cmd_session_diff(args)
+    elif args.command == "export-junit":
+        return _cmd_export_junit(args)
     elif args.command == "stats":
         return _cmd_stats(args)
     elif args.command == "cache":
