@@ -206,6 +206,7 @@ class AntiHallucinationResponse:
     verification_log: List[Dict[str, Any]] = field(default_factory=list)
     token_usage: TokenUsage = field(default_factory=TokenUsage)
     elapsed_seconds: float = 0.0
+    phase_timings: Dict[str, float] = field(default_factory=dict)
 
     def evaluate(self, policy: "VerificationPolicy") -> "VerificationDecision":
         """Evaluate this response against a reusable release policy."""
@@ -320,6 +321,9 @@ class AntiHallucinationResponse:
                 "completion_tokens": self.token_usage.completion_tokens,
                 "total_tokens": self.token_usage.total_tokens,
             },
+            "phase_timings": {
+                name: round(seconds, 3) for name, seconds in self.phase_timings.items()
+            },
             "elapsed_seconds": round(self.elapsed_seconds, 3),
         }
 
@@ -361,6 +365,12 @@ class AntiHallucinationResponse:
         lines.append("")
         lines.append(f"- **Tokens used**: {self.token_usage.total_tokens}")
         lines.append(f"- **Duration**: {self.elapsed_seconds:.2f}s")
+        if self.phase_timings:
+            breakdown = ", ".join(
+                f"{name} {seconds:.2f}s"
+                for name, seconds in self.phase_timings.items()
+            )
+            lines.append(f"- **Phase timings**: {breakdown}")
         lines.append(f"- **Hallucinations caught**: {len(self.hallucinations_caught)}")
         lines.append(
             f"- **Hallucination density**: {self.hallucination_density():.2f} "
@@ -1231,11 +1241,13 @@ class AntiHallucinator:
         start = time.monotonic()
         usage = TokenUsage()
         budget = _CallBudget(self.max_llm_calls) if self.max_llm_calls else None
+        phase_timings: Dict[str, float] = {}
 
         # Phase 1: Drafting. The budget is validated to admit at least one
         # call, so the first acquisition cannot fail.
         if budget is not None and not budget.try_acquire():
             raise RuntimeError("LLM call budget exhausted before drafting")
+        phase_started = time.monotonic()
         draft = self._call_llm(
             model=model,
             system_prompt=self._draft_system_prompt,
@@ -1243,6 +1255,7 @@ class AntiHallucinator:
             usage=usage,
             max_tokens=max_tokens,
         )
+        phase_timings["drafting"] = time.monotonic() - phase_started
 
         if self.strictness == 0.0:
             return AntiHallucinationResponse(
@@ -1250,6 +1263,7 @@ class AntiHallucinator:
                 verification_log=[{"phase": "bypassed", "reason": "strictness=0.0"}],
                 token_usage=usage,
                 elapsed_seconds=time.monotonic() - start,
+                phase_timings=phase_timings,
             )
 
         # Phase 2: Fact Extraction
@@ -1263,7 +1277,9 @@ class AntiHallucinator:
                 }],
                 token_usage=usage,
                 elapsed_seconds=time.monotonic() - start,
+                phase_timings=phase_timings,
             )
+        phase_started = time.monotonic()
         claims_text = self._call_llm(
             model=model,
             system_prompt=self._extraction_prompt,
@@ -1271,6 +1287,7 @@ class AntiHallucinator:
             usage=usage,
             max_tokens=max_tokens,
         )
+        phase_timings["extraction"] = time.monotonic() - phase_started
 
         claims = self._parse_claims(claims_text)
 
@@ -1285,6 +1302,7 @@ class AntiHallucinator:
                 }],
                 token_usage=usage,
                 elapsed_seconds=time.monotonic() - start,
+                phase_timings=phase_timings,
             )
 
         # Phase 3: Critique / Verification
@@ -1295,6 +1313,7 @@ class AntiHallucinator:
         verification_log: List[Dict[str, Any]] = []
         hallucinations_caught: List[str] = []
 
+        phase_started = time.monotonic()
         for claim in claims:
             if budget is not None and not budget.try_acquire():
                 verification_log.append({
@@ -1318,6 +1337,8 @@ class AntiHallucinator:
                     f"Claim '{claim}' flagged: {result['critique']}"
                 )
 
+        phase_timings["verification"] = time.monotonic() - phase_started
+
         # Phase 4: Correction
         if not hallucinations_caught:
             return AntiHallucinationResponse(
@@ -1325,6 +1346,7 @@ class AntiHallucinator:
                 verification_log=verification_log,
                 token_usage=usage,
                 elapsed_seconds=time.monotonic() - start,
+                phase_timings=phase_timings,
             )
 
         if budget is not None and not budget.try_acquire():
@@ -1335,8 +1357,10 @@ class AntiHallucinator:
                 + [{"phase": "correction", "skipped_by_budget": True}],
                 token_usage=usage,
                 elapsed_seconds=time.monotonic() - start,
+                phase_timings=phase_timings,
             )
 
+        phase_started = time.monotonic()
         final_content = self._call_llm(
             model=model,
             system_prompt=self._correction_prompt,
@@ -1349,12 +1373,15 @@ class AntiHallucinator:
             max_tokens=max_tokens,
         )
 
+        phase_timings["correction"] = time.monotonic() - phase_started
+
         return AntiHallucinationResponse(
             content=final_content,
             hallucinations_caught=hallucinations_caught,
             verification_log=verification_log,
             token_usage=usage,
             elapsed_seconds=time.monotonic() - start,
+            phase_timings=phase_timings,
         )
 
     def generate_many(
@@ -1450,13 +1477,16 @@ class AntiHallucinator:
         start = time.monotonic()
         usage = TokenUsage()
         budget = _CallBudget(self.max_llm_calls) if self.max_llm_calls else None
+        phase_timings: Dict[str, float] = {}
 
         # Phase 1 & 2 are sequential (need the draft before extraction)
         if budget is not None and not budget.try_acquire():
             raise RuntimeError("LLM call budget exhausted before drafting")
+        phase_started = time.monotonic()
         draft = await asyncio.to_thread(
             self._call_llm, model, self._draft_system_prompt, prompt, usage
         )
+        phase_timings["drafting"] = time.monotonic() - phase_started
 
         if self.strictness == 0.0:
             return AntiHallucinationResponse(
@@ -1464,6 +1494,7 @@ class AntiHallucinator:
                 verification_log=[{"phase": "bypassed", "reason": "strictness=0.0"}],
                 token_usage=usage,
                 elapsed_seconds=time.monotonic() - start,
+                phase_timings=phase_timings,
             )
 
         if budget is not None and not budget.try_acquire():
@@ -1476,8 +1507,10 @@ class AntiHallucinator:
                 }],
                 token_usage=usage,
                 elapsed_seconds=time.monotonic() - start,
+                phase_timings=phase_timings,
             )
 
+        phase_started = time.monotonic()
         claims_text = await asyncio.to_thread(
             self._call_llm,
             model,
@@ -1485,6 +1518,7 @@ class AntiHallucinator:
             f"Text to analyze:\n\n{draft}",
             usage,
         )
+        phase_timings["extraction"] = time.monotonic() - phase_started
 
         claims = self._parse_claims(claims_text)
 
@@ -1498,6 +1532,7 @@ class AntiHallucinator:
                 }],
                 token_usage=usage,
                 elapsed_seconds=time.monotonic() - start,
+                phase_timings=phase_timings,
             )
 
         # Phase 3: Parallel claim verification
@@ -1537,10 +1572,12 @@ class AntiHallucinator:
                     cache_scope=cache_scope,
                 )
 
+        phase_started = time.monotonic()
         verification_results = await asyncio.gather(
             *[_verify(c) for c in claims]
         )
 
+        phase_timings["verification"] = time.monotonic() - phase_started
         verification_log = list(verification_results)
         hallucinations_caught = [
             f"Claim '{r['claim']}' flagged: {r['critique']}"
@@ -1555,6 +1592,7 @@ class AntiHallucinator:
                 verification_log=verification_log,
                 token_usage=usage,
                 elapsed_seconds=time.monotonic() - start,
+                phase_timings=phase_timings,
             )
 
         if budget is not None and not budget.try_acquire():
@@ -1565,8 +1603,10 @@ class AntiHallucinator:
                 + [{"phase": "correction", "skipped_by_budget": True}],
                 token_usage=usage,
                 elapsed_seconds=time.monotonic() - start,
+                phase_timings=phase_timings,
             )
 
+        phase_started = time.monotonic()
         final_content = await asyncio.to_thread(
             self._call_llm,
             model,
@@ -1579,10 +1619,13 @@ class AntiHallucinator:
             usage,
         )
 
+        phase_timings["correction"] = time.monotonic() - phase_started
+
         return AntiHallucinationResponse(
             content=final_content,
             hallucinations_caught=hallucinations_caught,
             verification_log=verification_log,
             token_usage=usage,
             elapsed_seconds=time.monotonic() - start,
+            phase_timings=phase_timings,
         )
