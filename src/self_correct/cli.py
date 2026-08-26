@@ -50,7 +50,23 @@ def _build_parser() -> argparse.ArgumentParser:
     verify = sub.add_parser("verify", help="Generate and verify text")
     verify.add_argument(
         "--model", default="gpt-4o-mini",
-        help="LLM model name (default: gpt-4o-mini)",
+        help="LLM model name (default: gpt-4o-mini); used for all phases unless overridden",
+    )
+    verify.add_argument(
+        "--model-draft", default=None,
+        help="Model for drafting phase (default: --model)",
+    )
+    verify.add_argument(
+        "--model-extract", default=None,
+        help="Model for fact extraction phase (default: --model)",
+    )
+    verify.add_argument(
+        "--model-verify", default=None,
+        help="Model for claim verification phase (default: --model)",
+    )
+    verify.add_argument(
+        "--model-correct", default=None,
+        help="Model for correction phase (default: --model)",
     )
     verify.add_argument(
         "--prompt", "-p", default=None,
@@ -169,7 +185,23 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Continue a verification from a saved session",
     )
     resume.add_argument("session", help="Session JSON created by --save-session")
-    resume.add_argument("--model", default=None, help="Override the saved model")
+    resume.add_argument("--model", default=None, help="Override the saved model (all phases)")
+    resume.add_argument(
+        "--model-draft", default=None,
+        help="Override the saved drafting model",
+    )
+    resume.add_argument(
+        "--model-extract", default=None,
+        help="Override the saved extraction model",
+    )
+    resume.add_argument(
+        "--model-verify", default=None,
+        help="Override the saved verification model",
+    )
+    resume.add_argument(
+        "--model-correct", default=None,
+        help="Override the saved correction model",
+    )
     resume.add_argument(
         "--strictness",
         type=float,
@@ -339,6 +371,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "--config", "-c", default="self-correct.json",
         help="Path to the config file (default: self-correct.json)",
     )
+    config_lint = config_sub.add_parser("lint-policy", help="Lint a verification policy file")
+    config_lint.add_argument(
+        "policy", help="Path to the verification policy JSON file"
+    )
+    config_lint.add_argument(
+        "--base", default=None, metavar="PATH",
+        help="Base policy file to check layered overrides against"
+    )
+    config_lint.add_argument(
+        "--json", action="store_true", help="Print the lint report as JSON"
+    )
 
     # upgrade subcommand
     upgrade = sub.add_parser("upgrade", help="Suggest upgrading to the latest version")
@@ -358,7 +401,23 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     batch.add_argument(
         "--model", default="gpt-4o-mini",
-        help="LLM model name (default: gpt-4o-mini)",
+        help="LLM model name (default: gpt-4o-mini); used for all phases unless overridden",
+    )
+    batch.add_argument(
+        "--model-draft", default=None,
+        help="Model for drafting phase (default: --model)",
+    )
+    batch.add_argument(
+        "--model-extract", default=None,
+        help="Model for fact extraction phase (default: --model)",
+    )
+    batch.add_argument(
+        "--model-verify", default=None,
+        help="Model for claim verification phase (default: --model)",
+    )
+    batch.add_argument(
+        "--model-correct", default=None,
+        help="Model for correction phase (default: --model)",
     )
     batch.add_argument(
         "--strictness", type=float, default=1.0,
@@ -648,6 +707,10 @@ def cmd_verify(args: argparse.Namespace) -> None:
         retry_backoff=getattr(args, "retry_backoff", 0.0),
         max_llm_calls=getattr(args, "max_calls", None),
         content_checks=content_checks,
+        model_draft=getattr(args, "model_draft", None),
+        model_extract=getattr(args, "model_extract", None),
+        model_verify=getattr(args, "model_verify", None),
+        model_correct=getattr(args, "model_correct", None),
     )
     cache_file = getattr(args, "cache_file", None)
     if cache_file and args.no_cache:
@@ -657,7 +720,15 @@ def cmd_verify(args: argparse.Namespace) -> None:
 
     started = time.time()
     try:
-        result = hallu.generate(model=args.model, prompt=prompt)
+        result = hallu.generate(
+        model=args.model,
+        prompt=prompt,
+        max_tokens=getattr(args, "max_tokens", None),
+        model_draft=getattr(args, "model_draft", None),
+        model_extract=getattr(args, "model_extract", None),
+        model_verify=getattr(args, "model_verify", None),
+        model_correct=getattr(args, "model_correct", None),
+    )
     except Exception as exc:
         history.record_run({
             "command": "verify",
@@ -693,6 +764,10 @@ def cmd_verify(args: argparse.Namespace) -> None:
                 "base_url": getattr(args, "base_url", None),
                 "api_key_env": getattr(args, "api_key_env", None),
                 "policy": getattr(args, "policy", None),
+                "model_draft": getattr(args, "model_draft", None),
+                "model_extract": getattr(args, "model_extract", None),
+                "model_verify": getattr(args, "model_verify", None),
+                "model_correct": getattr(args, "model_correct", None),
             },
             result=result.to_dict(),
         )
@@ -853,6 +928,10 @@ def _cmd_resume(args: argparse.Namespace) -> int | None:
         fail_on_hallucination=args.fail_on_hallucination,
         verbose=getattr(args, "verbose", False),
         quiet=getattr(args, "quiet", False),
+        model_draft=args.model_draft or config.get("model_draft"),
+        model_extract=args.model_extract or config.get("model_extract"),
+        model_verify=args.model_verify or config.get("model_verify"),
+        model_correct=args.model_correct or config.get("model_correct"),
     )
     return cmd_verify(verify_args)
 
@@ -1468,6 +1547,10 @@ def cmd_batch(args: argparse.Namespace) -> None:
         cache_ttl=getattr(args, "cache_ttl", None),
         max_llm_calls=getattr(args, "max_calls", None),
         content_checks=batch_checks,
+        model_draft=getattr(args, "model_draft", None),
+        model_extract=getattr(args, "model_extract", None),
+        model_verify=getattr(args, "model_verify", None),
+        model_correct=getattr(args, "model_correct", None),
     )
 
     # Read input
@@ -1584,6 +1667,101 @@ def cmd_config_validate(args: argparse.Namespace) -> None:
         print(f"Validation failed: invalid JSON - {e}", file=sys.stderr)
 
 
+def cmd_config_lint_policy(args: argparse.Namespace) -> int:
+    """Lint a verification policy file for consistency and issues."""
+    from pathlib import Path
+    from .core import VerificationPolicy, load_layered_policy
+
+    policy_path = Path(args.policy)
+    if not policy_path.exists():
+        print(f"Policy file not found: {policy_path}", file=sys.stderr)
+        return 2
+
+    issues = []
+    warnings = []
+
+    # Load the policy (or layered policies)
+    if args.base:
+        base_path = Path(args.base)
+        if not base_path.exists():
+            print(f"Base policy file not found: {base_path}", file=sys.stderr)
+            return 2
+        try:
+            policy, conflicts = load_layered_policy([base_path, policy_path])
+            for c in conflicts:
+                warnings.append(f"Layer override: {c}")
+        except ValueError as e:
+            issues.append(f"Layered policy error: {e}")
+            policy = None
+    else:
+        try:
+            policy = VerificationPolicy.from_json(policy_path)
+        except ValueError as e:
+            issues.append(f"Policy parse error: {e}")
+            policy = None
+
+    if policy is not None:
+        # Check for potentially problematic combinations
+        if policy.min_verified_ratio > 0.0 and policy.max_flagged_claims == 0:
+            # This is actually fine, just strict
+            pass
+        if policy.min_verified_ratio < 1.0 and policy.max_flagged_claims == 0:
+            warnings.append("min_verified_ratio < 1.0 but max_flagged_claims = 0; flagged claims will fail")
+        if policy.min_evidence_ratio > 0.0 and policy.min_evidence_claims == 0:
+            warnings.append("min_evidence_ratio > 0 but min_evidence_claims = 0; ratio may be unsatisfiable with few claims")
+        if policy.max_hallucination_density is not None and policy.max_hallucination_density > 10:
+            warnings.append(f"max_hallucination_density = {policy.max_hallucination_density} is unusually high (per 100 words)")
+        if policy.max_critical_claims > 0 and policy.max_flagged_claims == 0:
+            warnings.append("max_critical_claims > 0 but max_flagged_claims = 0; critical claims are a subset of flagged")
+
+        # Check for unused/unknown fields by re-parsing raw JSON
+        import json
+        try:
+            with open(policy_path, 'r', encoding='utf-8') as f:
+                raw = json.load(f)
+            if args.base:
+                with open(args.base, 'r', encoding='utf-8') as f:
+                    base_raw = json.load(f)
+                # Merge to see effective keys
+                merged = {**base_raw, **raw}
+                raw = merged
+            known_fields = {
+                'min_verified_ratio', 'min_verified_claims', 'max_flagged_claims',
+                'require_claims', 'min_evidence_ratio', 'min_evidence_claims',
+                'max_hallucination_density', 'max_critical_claims'
+            }
+            unknown = set(raw.keys()) - known_fields
+            if unknown:
+                warnings.append(f"Unknown policy fields (ignored): {', '.join(sorted(unknown))}")
+        except Exception:
+            pass
+
+    report = {
+        'policy': str(policy_path),
+        'base': str(args.base) if args.base else None,
+        'valid': len(issues) == 0,
+        'issues': issues,
+        'warnings': warnings,
+    }
+
+    if args.json:
+        import json
+        print(json.dumps(report, indent=2))
+    else:
+        if report['valid']:
+            print(f"Policy '{policy_path}' is valid.")
+        else:
+            print(f"Policy '{policy_path}' has issues:")
+        for issue in issues:
+            print(f"  ERROR: {issue}")
+        for warning in warnings:
+            print(f"  WARNING: {warning}")
+        if not issues and not warnings:
+            print("  No issues found.")
+
+    return 0 if report['valid'] else 1
+
+
 def main(argv: Optional[list[str]] = None) -> None:
     """Main CLI entry point."""
     parser = _build_parser()
@@ -1629,6 +1807,8 @@ def main(argv: Optional[list[str]] = None) -> None:
             cmd_config_init(args)
         elif args.config_command == "validate":
             cmd_config_validate(args)
+        elif args.config_command == "lint-policy":
+            return cmd_config_lint_policy(args)
     elif args.command == "upgrade":
         cmd_upgrade()
     else:
