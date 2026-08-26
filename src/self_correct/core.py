@@ -904,6 +904,10 @@ class AntiHallucinator:
         max_evidence_results: int = 3,
         max_llm_calls: Optional[int] = None,
         content_checks: Optional[List[ContentCheck]] = None,
+        model_draft: Optional[str] = None,
+        model_extract: Optional[str] = None,
+        model_verify: Optional[str] = None,
+        model_correct: Optional[str] = None,
     ) -> None:
         """
         Initialize the AntiHallucinator wrapper.
@@ -926,6 +930,14 @@ class AntiHallucinator:
             Hard cap on LLM API calls for one run. Once spent, remaining
             claims are logged as skipped instead of verified; cached claim
             lookups do not consume the budget.
+        model_draft : Optional[str]
+            Model for drafting phase (falls back to generate() model arg).
+        model_extract : Optional[str]
+            Model for fact extraction phase (falls back to generate() model arg).
+        model_verify : Optional[str]
+            Model for claim verification phase (falls back to generate() model arg).
+        model_correct : Optional[str]
+            Model for correction phase (falls back to generate() model arg).
         """
         if isinstance(max_retries, bool) or max_retries < 0:
             raise ValueError("max_retries must be a non-negative integer")
@@ -954,6 +966,10 @@ class AntiHallucinator:
         self.max_evidence_results = max_evidence_results
         self.max_llm_calls = max_llm_calls
         self.content_checks: List[ContentCheck] = list(content_checks or [])
+        self._model_draft = model_draft
+        self._model_extract = model_extract
+        self._model_verify = model_verify
+        self._model_correct = model_correct
 
     @property
     def cache(self) -> _ClaimCache:
@@ -1254,35 +1270,70 @@ class AntiHallucinator:
     # Public API: Synchronous
     # ------------------------------------------------------------------
 
-    def generate(self, model: str, prompt: str, max_tokens: int | None = None) -> AntiHallucinationResponse:
+    def generate(
+        self,
+        model: str,
+        prompt: str,
+        max_tokens: int | None = None,
+        model_draft: Optional[str] = None,
+        model_extract: Optional[str] = None,
+        model_verify: Optional[str] = None,
+        model_correct: Optional[str] = None,
+    ) -> AntiHallucinationResponse:
         """
         Generate text with automatic hallucination detection and correction.
 
         This is the synchronous entry point. For parallel claim verification,
-        use ``generate_async()`` instead. When ``strictness > 0`` and content
+        use `generate_async()` instead. When `strictness > 0` and content
         checks are configured, every returned response has been audited by
         them first.
+
+        Parameters
+        ----------
+        model : str
+            Default model name for all phases.
+        prompt : str
+            The prompt to process.
+        max_tokens : Optional[int]
+            Maximum tokens per LLM response.
+        model_draft : Optional[str]
+            Override model for drafting phase.
+        model_extract : Optional[str]
+            Override model for fact extraction phase.
+        model_verify : Optional[str]
+            Override model for claim verification phase.
+        model_correct : Optional[str]
+            Override model for correction phase.
         """
-        response = self._generate_sync(model, prompt, max_tokens)
+        # Use instance defaults if not overridden
+        draft = model_draft or self._model_draft or model
+        extract = model_extract or self._model_extract or model
+        verify = model_verify or self._model_verify or model
+        correct = model_correct or self._model_correct or model
+
+        response = self._generate_sync(model, prompt, max_tokens,
+                                       model_draft=draft, model_extract=extract,
+                                       model_verify=verify, model_correct=correct)
         if self.strictness > 0.0:
             self._apply_content_checks(response)
         return response
 
     def _generate_sync(
-        self, model: str, prompt: str, max_tokens: int | None = None
+        self, model: str, prompt: str, max_tokens: int | None = None,
+        model_draft: Optional[str] = None, model_extract: Optional[str] = None,
+        model_verify: Optional[str] = None, model_correct: Optional[str] = None
     ) -> AntiHallucinationResponse:
         start = time.monotonic()
         usage = TokenUsage()
         budget = _CallBudget(self.max_llm_calls) if self.max_llm_calls else None
         phase_timings: Dict[str, float] = {}
 
-        # Phase 1: Drafting. The budget is validated to admit at least one
-        # call, so the first acquisition cannot fail.
+        # Phase 1: Drafting
         if budget is not None and not budget.try_acquire():
             raise RuntimeError("LLM call budget exhausted before drafting")
         phase_started = time.monotonic()
         draft = self._call_llm(
-            model=model,
+            model=model_draft,
             system_prompt=self._draft_system_prompt,
             user_prompt=prompt,
             usage=usage,
@@ -1314,7 +1365,7 @@ class AntiHallucinator:
             )
         phase_started = time.monotonic()
         claims_text = self._call_llm(
-            model=model,
+            model=model_extract,
             system_prompt=self._extraction_prompt,
             user_prompt=f"Text to analyze:\n\n{draft}",
             usage=usage,
@@ -1341,7 +1392,7 @@ class AntiHallucinator:
         # Phase 3: Critique / Verification
         critique_prompt = self._build_critique_prompt()
         use_tools = self.strictness >= 0.8 and len(self.tools) > 0
-        cache_scope = self._cache_scope(model, critique_prompt, use_tools)
+        cache_scope = self._cache_scope(model_verify, critique_prompt, use_tools)
 
         verification_log: List[Dict[str, Any]] = []
         hallucinations_caught: List[str] = []
@@ -1357,7 +1408,7 @@ class AntiHallucinator:
                 continue
             result = self._verify_single_claim(
                 claim,
-                model,
+                model_verify,
                 critique_prompt,
                 use_tools,
                 usage,
@@ -1395,7 +1446,7 @@ class AntiHallucinator:
 
         phase_started = time.monotonic()
         final_content = self._call_llm(
-            model=model,
+            model=model_correct,
             system_prompt=self._correction_prompt,
             user_prompt=(
                 f"Original Draft:\n{draft}\n\n"
@@ -1478,29 +1529,64 @@ class AntiHallucinator:
     # ------------------------------------------------------------------
 
     async def generate_async(
-        self, model: str, prompt: str, *, max_concurrency: int | None = None
+        self,
+        model: str,
+        prompt: str,
+        *,
+        max_concurrency: int | None = None,
+        model_draft: Optional[str] = None,
+        model_extract: Optional[str] = None,
+        model_verify: Optional[str] = None,
+        model_correct: Optional[str] = None,
     ) -> AntiHallucinationResponse:
         """
         Async version of generate() that verifies claims in parallel.
 
         Claims are verified concurrently using asyncio, significantly
         reducing total latency when many claims are extracted.  Set
-        ``max_concurrency`` to protect a provider from bursts or rate limits.
+        `max_concurrency` to protect a provider from bursts or rate limits.
 
         Usage::
 
             import asyncio
             result = asyncio.run(safe_client.generate_async(model, prompt))
+
+        Parameters
+        ----------
+        model : str
+            Default model name for all phases.
+        prompt : str
+            The prompt to process.
+        max_concurrency : Optional[int]
+            Maximum concurrent claim verifications.
+        model_draft : Optional[str]
+            Override model for drafting phase.
+        model_extract : Optional[str]
+            Override model for fact extraction phase.
+        model_verify : Optional[str]
+            Override model for claim verification phase.
+        model_correct : Optional[str]
+            Override model for correction phase.
         """
+        # Use instance defaults if not overridden
+        draft = model_draft or self._model_draft or model
+        extract = model_extract or self._model_extract or model
+        verify = model_verify or self._model_verify or model
+        correct = model_correct or self._model_correct or model
+
         response = await self._generate_async_impl(
-            model, prompt, max_concurrency=max_concurrency
+            model, prompt, max_concurrency=max_concurrency,
+            model_draft=draft, model_extract=extract,
+            model_verify=verify, model_correct=correct
         )
         if self.strictness > 0.0:
             self._apply_content_checks(response)
         return response
 
     async def _generate_async_impl(
-        self, model: str, prompt: str, *, max_concurrency: int | None = None
+        self, model: str, prompt: str, *, max_concurrency: int | None = None,
+        model_draft: Optional[str] = None, model_extract: Optional[str] = None,
+        model_verify: Optional[str] = None, model_correct: Optional[str] = None
     ) -> AntiHallucinationResponse:
         if max_concurrency is not None and (
             isinstance(max_concurrency, bool) or max_concurrency < 1
@@ -1517,7 +1603,7 @@ class AntiHallucinator:
             raise RuntimeError("LLM call budget exhausted before drafting")
         phase_started = time.monotonic()
         draft = await asyncio.to_thread(
-            self._call_llm, model, self._draft_system_prompt, prompt, usage
+            self._call_llm, model_draft, self._draft_system_prompt, prompt, usage
         )
         phase_timings["drafting"] = time.monotonic() - phase_started
 
@@ -1546,7 +1632,7 @@ class AntiHallucinator:
         phase_started = time.monotonic()
         claims_text = await asyncio.to_thread(
             self._call_llm,
-            model,
+            model_extract,
             self._extraction_prompt,
             f"Text to analyze:\n\n{draft}",
             usage,
@@ -1571,7 +1657,7 @@ class AntiHallucinator:
         # Phase 3: Parallel claim verification
         critique_prompt = self._build_critique_prompt()
         use_tools = self.strictness >= 0.8 and len(self.tools) > 0
-        cache_scope = self._cache_scope(model, critique_prompt, use_tools)
+        cache_scope = self._cache_scope(model_verify, critique_prompt, use_tools)
         semaphore = asyncio.Semaphore(max_concurrency) if max_concurrency else None
 
         def _skip(claim: str) -> Dict[str, Any]:
@@ -1588,7 +1674,7 @@ class AntiHallucinator:
                 return await asyncio.to_thread(
                     self._verify_single_claim,
                     claim,
-                    model,
+                    model_verify,
                     critique_prompt,
                     use_tools,
                     usage,
@@ -1598,7 +1684,7 @@ class AntiHallucinator:
                 return await asyncio.to_thread(
                     self._verify_single_claim,
                     claim,
-                    model,
+                    model_verify,
                     critique_prompt,
                     use_tools,
                     usage,
@@ -1642,7 +1728,7 @@ class AntiHallucinator:
         phase_started = time.monotonic()
         final_content = await asyncio.to_thread(
             self._call_llm,
-            model,
+            model_correct,
             self._correction_prompt,
             (
                 f"Original Draft:\n{draft}\n\n"
