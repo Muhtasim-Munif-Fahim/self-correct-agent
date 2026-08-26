@@ -268,6 +268,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Exit with status 1 when a verified claim regressed to flagged",
     )
 
+    sessions_stats_parser = sub.add_parser(
+        "sessions-stats",
+        help="Aggregate claim analytics across saved session files",
+    )
+    sessions_stats_parser.add_argument(
+        "paths", nargs="+", metavar="PATH",
+        help="Session JSON files or directories to scan (directories are scanned for *.json)",
+    )
+    sessions_stats_parser.add_argument(
+        "--json", action="store_true", help="Print the aggregate as JSON",
+    )
+
     export_junit_parser = sub.add_parser(
         "export-junit",
         help="Export a saved session as JUnit XML for CI dashboards",
@@ -803,6 +815,55 @@ def _cmd_resume(args: argparse.Namespace) -> int | None:
         quiet=getattr(args, "quiet", False),
     )
     return cmd_verify(verify_args)
+
+
+def _cmd_sessions_stats(args: argparse.Namespace) -> int:
+    """Aggregate claim analytics across saved session files."""
+
+    aggregate = sessions.aggregate_sessions(args.paths)
+
+    if args.json:
+        print(json.dumps(aggregate, indent=2))
+        return 0
+
+    totals = aggregate["totals"]
+    for bad in aggregate["invalid"]:
+        print(f"sessions-stats: skipped {bad['file']}: {bad['error']}", file=sys.stderr)
+    if not totals["sessions"]:
+        print("No valid session files found.", file=sys.stderr)
+        return 2
+
+    def trend_row(when, claims, verified, flagged, flag_rate, severities, label):
+        rate = f"{flag_rate:.1%}" if isinstance(flag_rate, (int, float)) else str(flag_rate)
+        return (
+            f"{when:<17}{claims:>7}{verified:>10}{flagged:>9}"
+            f"{rate:>10}{severities['critical']:>6}{severities['major']:>7}"
+            f"{severities['minor']:>7}  {label}"
+        )
+
+    header = trend_row(
+        "Modified", "Claims", "Verified", "Flagged", "Rate",
+        {"critical": "Crit", "major": "Major", "minor": "Minor"}, "File",
+    )
+    print(
+        f"Session analytics across {totals['sessions']} saved session(s), "
+        f"{totals['claims']} claim(s); oldest first"
+    )
+    print()
+    print(header)
+    print("-" * len(header))
+    for row in aggregate["sessions"]:
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(row["modified"]))
+        print(trend_row(
+            when, row["claims"], row["verified"], row["flagged"],
+            row["flag_rate"], row["severities"], row["file"],
+        ))
+    print("-" * len(header))
+    print(trend_row(
+        "", totals["claims"], totals["verified"], totals["flagged"],
+        totals["flag_rate"], totals["severities"], "TOTAL",
+    ))
+    return 0
 
 
 def _cmd_export_junit(args: argparse.Namespace) -> int:
@@ -1511,6 +1572,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         return _cmd_compare(args)
     elif args.command == "session-diff":
         return _cmd_session_diff(args)
+    elif args.command == "sessions-stats":
+        return _cmd_sessions_stats(args)
     elif args.command == "export-junit":
         return _cmd_export_junit(args)
     elif args.command == "stats":

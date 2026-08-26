@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, Mapping
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
+
+from .core import VALID_SEVERITIES, classify_severity
 
 SESSION_SCHEMA_VERSION = 1
 
@@ -100,3 +102,97 @@ def diff_sessions(
         "baseline_claims": len(before),
         "current_claims": len(after),
     }
+
+def collect_session_files(paths: Iterable[str | Path]) -> List[Path]:
+    """Expand file and directory arguments into saved-session files.
+
+    A directory contributes its ``*.json`` entries in name order; anything
+    else is taken as one file path. Duplicates are dropped so overlapping
+    arguments do not count a session twice.
+    """
+
+    files: List[Path] = []
+    seen = set()
+    for entry in paths:
+        candidate = Path(entry)
+        matches = sorted(candidate.glob("*.json")) if candidate.is_dir() else [candidate]
+        for match in matches:
+            key = str(match)
+            if key not in seen:
+                seen.add(key)
+                files.append(match)
+    return files
+
+
+def summarize_session_file(
+    path: str | Path,
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Summarise claim outcomes in one saved session.
+
+    Returns ``(summary, None)`` on success and ``(None, reason)`` when the
+    file cannot be read or is not a valid session, so a scan over many files
+    can skip broken ones without losing the reason why.
+    """
+
+    try:
+        session = load_session(path)
+    except ValueError as exc:
+        return None, str(exc)
+
+    verdicts = [
+        entry
+        for entry in session["result"].get("verification_log") or []
+        if isinstance(entry, dict) and "is_valid" in entry
+    ]
+    verified = sum(bool(entry["is_valid"]) for entry in verdicts)
+    claims = len(verdicts)
+    severities = {name: 0 for name in VALID_SEVERITIES}
+    for entry in verdicts:
+        if entry["is_valid"] is False:
+            severities[classify_severity(str(entry.get("critique", "")))] += 1
+    summary = {
+        "file": str(path),
+        "claims": claims,
+        "verified": verified,
+        "flagged": claims - verified,
+        "flag_rate": (claims - verified) / claims if claims else 0.0,
+        "severities": severities,
+        "modified": Path(path).stat().st_mtime,
+    }
+    return summary, None
+
+
+def aggregate_sessions(paths: Iterable[str | Path]) -> Dict[str, Any]:
+    """Aggregate claim analytics across many saved session files.
+
+    The result carries per-session rows sorted oldest to newest by file
+    modification time (the trend view), totals across every valid session,
+    and an ``invalid`` list describing files that could not be read.
+    """
+
+    summaries: List[Dict[str, Any]] = []
+    invalid: List[Dict[str, str]] = []
+    for path in collect_session_files(paths):
+        summary, error = summarize_session_file(path)
+        if error is not None:
+            invalid.append({"file": str(path), "error": error})
+        else:
+            summaries.append(summary)
+    summaries.sort(key=lambda item: item["modified"])
+
+    claims = sum(item["claims"] for item in summaries)
+    verified = sum(item["verified"] for item in summaries)
+    flagged = claims - verified
+    totals: Dict[str, Any] = {
+        "sessions": len(summaries),
+        "invalid_files": len(invalid),
+        "claims": claims,
+        "verified": verified,
+        "flagged": flagged,
+        "flag_rate": flagged / claims if claims else 0.0,
+        "severities": {
+            name: sum(item["severities"][name] for item in summaries)
+            for name in VALID_SEVERITIES
+        },
+    }
+    return {"sessions": summaries, "invalid": invalid, "totals": totals}
