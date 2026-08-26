@@ -43,4 +43,14 @@ def test_verify_accepts_policy_file() -> None:
     args = _build_parser().parse_args(
         ["verify", "--prompt", "Check this", "--policy", "policy.json"]
     )
-    assert args.policy == "policy.json"
+    assert args.policy == ["policy.json"]
+
+
+def test_verify_accepts_layered_policy_files() -> None:
+    args = _build_parser().parse_args(
+        [
+            "verify", "--prompt", "Check this",
+            "--policy", "base.json", "--policy", "strict.json",
+        ]
+    )
+    assert args.policy == ["base.json", "strict.json"]

@@ -27,7 +27,7 @@ from abc import ABC, abstractmethod
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -577,6 +577,39 @@ class VerificationPolicy:
             evidence_claims=evidence_claims,
             reasons=reasons,
         )
+
+
+def load_layered_policy(
+    paths: "Sequence[str | Path]",
+) -> Tuple["VerificationPolicy", List[str]]:
+    """Load one verification policy layered over another.
+
+    Files are merged left to right and later files win: a field set in an
+    override file replaces the base value, while fields the override omits
+    keep the base value. The merged mapping is validated once, so unknown
+    or invalid values are rejected exactly as a single-file policy would be.
+
+    Returns the merged policy plus one human-readable note per field whose
+    value actually changed between layers, in application order.
+    """
+
+    merged: Dict[str, Any] = {}
+    conflicts: List[str] = []
+    for path in paths:
+        source = Path(path)
+        try:
+            payload = json.loads(source.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"cannot read verification policy '{source}': {exc}") from exc
+        if not isinstance(payload, dict):
+            raise ValueError(f"verification policy '{source}' must be a JSON object")
+        for key, value in payload.items():
+            if key in merged and merged[key] != value:
+                conflicts.append(
+                    f"{key}: {merged[key]!r} overridden with {value!r} by '{source.name}'"
+                )
+        merged.update(payload)
+    return VerificationPolicy.from_dict(merged), conflicts
 
 
 class ContentCheck(ABC):

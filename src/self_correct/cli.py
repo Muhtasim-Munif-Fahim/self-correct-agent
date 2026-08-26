@@ -25,6 +25,7 @@ from .core import (
     AntiHallucinator,
     VerificationPolicy,
     load_content_checks,
+    load_layered_policy,
     model_pricing,
 )
 from .tools import DuckDuckGoSearchTool, WikipediaSearchTool
@@ -147,9 +148,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     verify.add_argument(
         "--policy",
+        action="append",
         default=None,
         metavar="PATH",
-        help="Apply a JSON verification policy and fail when it is not satisfied",
+        help=(
+            "Apply a JSON verification policy and fail when it is not satisfied; "
+            "repeat to layer overrides (later files win)"
+        ),
     )
 
     resume = sub.add_parser(
@@ -726,11 +731,7 @@ def cmd_verify(args: argparse.Namespace) -> None:
     if not getattr(args, "quiet", False):
         if args.verbose:
             print(f"Verbose: {result.token_usage.total_tokens} tokens, {result.elapsed_seconds:.2f}s", file=sys.stderr)
-    policy = (
-        VerificationPolicy.from_json(args.policy)
-        if getattr(args, "policy", None)
-        else None
-    )
+    policy = _resolve_policy(getattr(args, "policy", None))
     decision = result.evaluate(policy) if policy is not None else None
     if decision is not None and not decision.passed:
         print("Verification policy failed: " + "; ".join(decision.reasons), file=sys.stderr)
@@ -739,6 +740,27 @@ def cmd_verify(args: argparse.Namespace) -> None:
         fail_on_hallucination=getattr(args, "fail_on_hallucination", False),
         policy=policy,
     )
+
+
+def _resolve_policy(
+    raw: object,
+) -> VerificationPolicy | None:
+    """Build a policy from one path or a list of layered paths.
+
+    A single file keeps the plain single-file loading behavior; several
+    files are merged left to right with later values winning, and every
+    overridden field is reported on stderr so accidental clobbering shows.
+    """
+
+    if not raw:
+        return None
+    paths = list(raw) if isinstance(raw, (list, tuple)) else [raw]
+    if len(paths) == 1:
+        return VerificationPolicy.from_json(paths[0])
+    policy, conflicts = load_layered_policy(paths)
+    for note in conflicts:
+        print(f"policy override: {note}", file=sys.stderr)
+    return policy
 
 
 def _verification_exit_code(
