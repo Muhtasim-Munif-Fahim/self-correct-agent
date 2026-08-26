@@ -28,6 +28,7 @@ from .core import (
     load_layered_policy,
     model_pricing,
 )
+from .redaction import load_redaction_rules
 from .tools import DuckDuckGoSearchTool, WikipediaSearchTool
 
 
@@ -145,6 +146,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--fail-on-hallucination",
         action="store_true",
         help="Exit with status 1 when one or more claims are flagged",
+    )
+    verify.add_argument(
+        "--redact",
+        default=None,
+        metavar="PATH",
+        help="Mask spans matched by JSON redaction rules before writing the report",
     )
     verify.add_argument(
         "--policy",
@@ -613,6 +620,14 @@ def cmd_verify(args: argparse.Namespace) -> None:
         except ValueError as exc:
             raise SystemExit(f"--checks: {exc}")
 
+    redact_path = getattr(args, "redact", None)
+    redactor = None
+    if redact_path:
+        try:
+            redactor = load_redaction_rules(redact_path)
+        except ValueError as exc:
+            raise SystemExit(f"--redact: {exc}")
+
     # The timeout belongs on the client so it covers every request the
     # verification pipeline makes, not just the first generation call.
     client = _build_client(args)
@@ -720,6 +735,9 @@ def cmd_verify(args: argparse.Namespace) -> None:
         lines.append("")
         lines.append("=" * 60)
         output = "\n".join(lines)
+
+    if redactor is not None:
+        output = redactor.redact(output)
 
     if args.output:
         with open(args.output, "w", encoding="utf-8") as f:
