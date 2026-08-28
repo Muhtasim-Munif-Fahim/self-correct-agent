@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from . import history, junit, sessions, templates
+from . import csvreport, history, junit, sessions, templates
 from .core import (
     MODEL_PRICING,
     AntiHallucinator,
@@ -334,6 +334,18 @@ def _build_parser() -> argparse.ArgumentParser:
     export_junit_parser.add_argument(
         "--output", "-o", default=None,
         help="Write the XML to a file instead of stdout",
+    )
+
+    export_csv_parser = sub.add_parser(
+        "export-csv",
+        help="Export a saved session's claim verdicts as CSV rows",
+    )
+    export_csv_parser.add_argument(
+        "session", help="Session JSON created by --save-session"
+    )
+    export_csv_parser.add_argument(
+        "--output", "-o", default=None,
+        help="Write the CSV to a file instead of stdout",
     )
 
     template_parser = sub.add_parser(
@@ -1002,6 +1014,26 @@ def _cmd_export_junit(args: argparse.Namespace) -> int:
         print(f"JUnit report written to {args.output}")
     else:
         print(xml_text)
+    return 0
+
+
+def _cmd_export_csv(args: argparse.Namespace) -> int:
+    """Export one saved session's per-claim verdicts as CSV."""
+
+    try:
+        session = sessions.load_session(args.session)
+    except ValueError as exc:
+        print(f"export-csv: {exc}", file=sys.stderr)
+        return 2
+
+    csv_text = csvreport.result_to_csv(session)
+    if args.output:
+        target = Path(args.output)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(csv_text, encoding="utf-8")
+        print(f"CSV report written to {args.output}")
+    else:
+        print(csv_text, end="")
     return 0
 
 
@@ -1794,6 +1826,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         return _cmd_sessions_stats(args)
     elif args.command == "export-junit":
         return _cmd_export_junit(args)
+    elif args.command == "export-csv":
+        return _cmd_export_csv(args)
     elif args.command == "stats":
         return _cmd_stats(args)
     elif args.command == "cache":
