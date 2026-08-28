@@ -196,3 +196,64 @@ def aggregate_sessions(paths: Iterable[str | Path]) -> Dict[str, Any]:
         },
     }
     return {"sessions": summaries, "invalid": invalid, "totals": totals}
+
+
+def search_sessions(
+    paths: Iterable[str | Path],
+    *,
+    claim_query: Optional[str] = None,
+    critique_query: Optional[str] = None,
+    verdict: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Find claim verdicts across saved sessions matching text filters.
+
+    Text filters are case-insensitive substring checks: ``claim_query``
+    applies to the claim text and ``critique_query`` to its critique.
+    ``verdict`` narrows results to ``"verified"`` or ``"flagged"`` claims;
+    every filter that is set must match (logical AND). The result carries
+    per-match rows with the source file, claim, verdict and critique, how
+    many sessions were scanned, and which files were skipped as invalid.
+    """
+
+    claim_lookup = claim_query.lower() if claim_query else None
+    critique_lookup = critique_query.lower() if critique_query else None
+
+    matches: List[Dict[str, Any]] = []
+    scanned = 0
+    invalid: List[Dict[str, str]] = []
+    for path in collect_session_files(paths):
+        try:
+            session = load_session(path)
+        except ValueError as exc:
+            invalid.append({"file": str(path), "error": str(exc)})
+            continue
+        scanned += 1
+        for idx, entry in enumerate(session["result"].get("verification_log") or [], 1):
+            if not isinstance(entry, dict):
+                continue
+            if "is_valid" not in entry or not entry.get("claim"):
+                continue
+            claim_text = str(entry["claim"])
+            is_valid = bool(entry["is_valid"])
+            critique = str(entry.get("critique", ""))
+            if claim_lookup and claim_lookup not in claim_text.lower():
+                continue
+            if critique_lookup and critique_lookup not in critique.lower():
+                continue
+            if verdict == "verified" and not is_valid:
+                continue
+            if verdict == "flagged" and is_valid:
+                continue
+            matches.append({
+                "file": str(path),
+                "id": idx,
+                "claim": claim_text,
+                "verdict": "verified" if is_valid else "flagged",
+                "critique": critique,
+            })
+    return {
+        "match_count": len(matches),
+        "scanned": scanned,
+        "invalid": invalid,
+        "matches": matches,
+    }

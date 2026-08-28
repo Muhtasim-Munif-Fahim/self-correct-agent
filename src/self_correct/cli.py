@@ -324,6 +324,30 @@ def _build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true", help="Print the aggregate as JSON",
     )
 
+    sessions_search_parser = sub.add_parser(
+        "sessions-search",
+        help="Search saved sessions for claims, critiques or verdicts",
+    )
+    sessions_search_parser.add_argument(
+        "paths", nargs="+", metavar="PATH",
+        help="Session JSON files or directories to scan (directories are scanned for *.json)",
+    )
+    sessions_search_parser.add_argument(
+        "--claim", default=None, metavar="TEXT",
+        help="Match claims containing TEXT (case-insensitive)",
+    )
+    sessions_search_parser.add_argument(
+        "--critique", default=None, metavar="TEXT",
+        help="Match critiques containing TEXT (case-insensitive)",
+    )
+    sessions_search_parser.add_argument(
+        "--verdict", choices=["verified", "flagged"], default=None,
+        help="Only match claims with this verdict",
+    )
+    sessions_search_parser.add_argument(
+        "--json", action="store_true", help="Print the matches as JSON",
+    )
+
     export_junit_parser = sub.add_parser(
         "export-junit",
         help="Export a saved session as JUnit XML for CI dashboards",
@@ -994,6 +1018,49 @@ def _cmd_sessions_stats(args: argparse.Namespace) -> int:
         "", totals["claims"], totals["verified"], totals["flagged"],
         totals["flag_rate"], totals["severities"], "TOTAL",
     ))
+    return 0
+
+
+def _cmd_sessions_search(args: argparse.Namespace) -> int:
+    """Search saved session files for claim verdicts by content."""
+
+    if not any((args.claim, args.critique, args.verdict)):
+        print(
+            "sessions-search: at least one of --claim, --critique or "
+            "--verdict is required",
+            file=sys.stderr,
+        )
+        return 2
+
+    result = sessions.search_sessions(
+        args.paths,
+        claim_query=args.claim,
+        critique_query=args.critique,
+        verdict=args.verdict,
+    )
+
+    if args.json:
+        print(json.dumps(result, indent=2))
+        return 0
+
+    for bad in result["invalid"]:
+        print(f"sessions-search: skipped {bad['file']}: {bad['error']}", file=sys.stderr)
+    if not result["scanned"]:
+        print("No valid session files found.", file=sys.stderr)
+        return 2
+
+    print(f"{result['match_count']} match(es) across {result['scanned']} session file(s)")
+    for match in result["matches"]:
+        verdict_mark = "+" if match["verdict"] == "verified" else "-"
+        preview = match["claim"]
+        if len(preview) > 72:
+            preview = preview[:72] + "..."
+        print(f"{match['file']}:{match['id']} [{verdict_mark}] {preview} [{match['verdict']}]")
+        critique = match["critique"]
+        if critique:
+            if len(critique) > 100:
+                critique = critique[:100] + "..."
+            print(f"    critique: {critique}")
     return 0
 
 
@@ -1824,6 +1891,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         return _cmd_session_diff(args)
     elif args.command == "sessions-stats":
         return _cmd_sessions_stats(args)
+    elif args.command == "sessions-search":
+        return _cmd_sessions_search(args)
     elif args.command == "export-junit":
         return _cmd_export_junit(args)
     elif args.command == "export-csv":
