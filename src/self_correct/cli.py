@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from . import csvreport, history, junit, sessions, templates
+from . import csvreport, history, jsonlreport, junit, sessions, templates
 from .core import (
     MODEL_PRICING,
     VALID_SEVERITIES,
@@ -372,6 +372,18 @@ def _build_parser() -> argparse.ArgumentParser:
     export_csv_parser.add_argument(
         "--output", "-o", default=None,
         help="Write the CSV to a file instead of stdout",
+    )
+
+    export_jsonl_parser = sub.add_parser(
+        "export-jsonl",
+        help="Export a saved session's claim verdicts as newline-delimited JSON",
+    )
+    export_jsonl_parser.add_argument(
+        "session", help="Session JSON created by --save-session"
+    )
+    export_jsonl_parser.add_argument(
+        "--output", "-o", default=None,
+        help="Write the JSONL to a file instead of stdout",
     )
 
     template_parser = sub.add_parser(
@@ -1142,6 +1154,26 @@ def _cmd_export_csv(args: argparse.Namespace) -> int:
         print(f"CSV report written to {args.output}")
     else:
         print(csv_text, end="")
+    return 0
+
+
+def _cmd_export_jsonl(args: argparse.Namespace) -> int:
+    """Export one saved session's per-claim verdicts as JSONL."""
+
+    try:
+        session = sessions.load_session(args.session)
+    except ValueError as exc:
+        print(f"export-jsonl: {exc}", file=sys.stderr)
+        return 2
+
+    jsonl_text = jsonlreport.result_to_jsonl(session)
+    if args.output:
+        target = Path(args.output)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(jsonl_text, encoding="utf-8")
+        print(f"JSONL report written to {args.output}")
+    else:
+        print(jsonl_text, end="")
     return 0
 
 
@@ -2077,6 +2109,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         return _cmd_export_junit(args)
     elif args.command == "export-csv":
         return _cmd_export_csv(args)
+    elif args.command == "export-jsonl":
+        return _cmd_export_jsonl(args)
     elif args.command == "stats":
         return _cmd_stats(args)
     elif args.command == "cache":
