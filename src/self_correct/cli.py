@@ -350,6 +350,26 @@ def _build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true", help="Print the matches as JSON",
     )
 
+    sessions_prune_parser = sub.add_parser(
+        "sessions-prune",
+        help="List or delete saved sessions older than a cutoff age",
+    )
+    sessions_prune_parser.add_argument(
+        "paths", nargs="+", metavar="PATH",
+        help="Session JSON files or directories to scan (directories are scanned for *.json)",
+    )
+    sessions_prune_parser.add_argument(
+        "--older-than", type=_positive_float, required=True, metavar="DAYS",
+        help="Only touch sessions modified more than DAYS ago",
+    )
+    sessions_prune_parser.add_argument(
+        "--dry-run", action="store_true",
+        help="List what would be deleted without deleting anything",
+    )
+    sessions_prune_parser.add_argument(
+        "--json", action="store_true", help="Print the result as JSON",
+    )
+
     export_junit_parser = sub.add_parser(
         "export-junit",
         help="Export a saved session as JUnit XML for CI dashboards",
@@ -1114,6 +1134,40 @@ def _cmd_sessions_search(args: argparse.Namespace) -> int:
             if len(critique) > 100:
                 critique = critique[:100] + "..."
             print(f"    critique: {critique}")
+    return 0
+
+
+def _cmd_sessions_prune(args: argparse.Namespace) -> int:
+    """List or delete saved session files older than a cutoff age.
+
+    Deletion only ever targets files that parse as valid sessions and whose
+    modification time is older than ``--older-than``; newer or unreadable
+    files are reported but never touched. Pass ``--dry-run`` to preview what
+    a real run would remove.
+    """
+
+    result = sessions.prune_sessions(
+        args.paths, args.older_than, dry_run=args.dry_run
+    )
+    for bad in result["invalid"]:
+        print(f"sessions-prune: skipped {bad['file']}: {bad['error']}", file=sys.stderr)
+
+    if args.json:
+        print(json.dumps(result, indent=2))
+        return 0
+
+    pruned = result.get("deleted") if not args.dry_run else result.get("candidates")
+    verb = "Would prune" if args.dry_run else "Pruned"
+    print(
+        f"sessions-prune: {verb} {len(pruned)} session(s) "
+        f"older than {args.older_than:g} day(s)"
+    )
+    for path in pruned:
+        print(f"  - {path}")
+    if result["kept"]:
+        print(f"Kept {len(result['kept'])} newer session(s).")
+    if not args.dry_run:
+        print(f"Deleted {len(result['deleted'])} file(s).")
     return 0
 
 
@@ -2105,6 +2159,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         return _cmd_sessions_stats(args)
     elif args.command == "sessions-search":
         return _cmd_sessions_search(args)
+    elif args.command == "sessions-prune":
+        return _cmd_sessions_prune(args)
     elif args.command == "export-junit":
         return _cmd_export_junit(args)
     elif args.command == "export-csv":

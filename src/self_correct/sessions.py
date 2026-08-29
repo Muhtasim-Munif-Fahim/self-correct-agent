@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
@@ -196,6 +197,59 @@ def aggregate_sessions(paths: Iterable[str | Path]) -> Dict[str, Any]:
         },
     }
     return {"sessions": summaries, "invalid": invalid, "totals": totals}
+
+
+def prune_sessions(
+    paths: Iterable[str | Path],
+    older_than_days: float,
+    *,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """List or delete saved sessions older than a cutoff age.
+
+    Only files that load as valid sessions are ever touched; anything
+    modified within the last ``older_than_days`` days is kept and counted,
+    so fresh or in-progress sessions are never candidates. Files that do not
+    parse as sessions are reported as invalid and never deleted. In
+    ``dry_run`` mode nothing is removed and the matching files are returned
+    under ``candidates`` instead of ``deleted``, so the destructive call can
+    be previewed first.
+    """
+
+    cutoff = time.time() - older_than_days * 86400
+    candidates: List[str] = []
+    kept: List[str] = []
+    invalid: List[Dict[str, str]] = []
+    for path in collect_session_files(paths):
+        try:
+            load_session(path)
+        except ValueError as exc:
+            invalid.append({"file": str(path), "error": str(exc)})
+            continue
+        if Path(path).stat().st_mtime >= cutoff:
+            kept.append(str(path))
+        else:
+            candidates.append(str(path))
+
+    deleted: List[str] = []
+    if not dry_run:
+        for candidate in candidates:
+            try:
+                Path(candidate).unlink()
+                deleted.append(candidate)
+            except OSError as exc:
+                invalid.append({"file": candidate, "error": str(exc)})
+
+    result: Dict[str, Any] = {
+        "dry_run": bool(dry_run),
+        "older_than_days": older_than_days,
+        "kept": kept,
+        "invalid": invalid,
+    }
+    result["deleted" if not dry_run else "candidates"] = (
+        deleted if not dry_run else candidates
+    )
+    return result
 
 
 def search_sessions(
