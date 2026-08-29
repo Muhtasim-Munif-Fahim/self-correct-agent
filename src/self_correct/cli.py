@@ -22,8 +22,10 @@ from typing import Optional
 from . import csvreport, history, junit, sessions, templates
 from .core import (
     MODEL_PRICING,
+    VALID_SEVERITIES,
     AntiHallucinator,
     VerificationPolicy,
+    classify_severity,
     load_content_checks,
     load_layered_policy,
     model_pricing,
@@ -1573,6 +1575,39 @@ def _is_completed(record: object) -> bool:
     return isinstance(record, dict) and "error" not in record
 
 
+#: Weights applied to a batch item's flagged claims when computing its
+#: severity score. Critical failures count triple, major double, minor once.
+SEVERITY_WEIGHTS = {"critical": 3, "major": 2, "minor": 1}
+
+
+def _severity_counts(record: dict) -> dict:
+    """Count a batch record's flagged claims by severity class.
+
+    Prefers the pipeline-written ``severity_summary`` when present, and
+    falls back to classifying the flagged claims' critiques (or the
+    ``hallucinations_caught`` texts when the log is missing) so resumed or
+    hand-written records still score.
+    """
+
+    counts = {name: 0 for name in VALID_SEVERITIES}
+    summary = record.get("severity_summary")
+    if isinstance(summary, dict):
+        for name in VALID_SEVERITIES:
+            counts[name] += int(summary.get(name, 0) or 0)
+        return counts
+    log = record.get("verification_log") or []
+    critiques = [
+        str(entry.get("critique", ""))
+        for entry in log
+        if isinstance(entry, dict) and entry.get("is_valid") is False
+    ]
+    if not critiques:
+        critiques = [str(x) for x in (record.get("hallucinations_caught") or [])]
+    for text in critiques:
+        counts[classify_severity(text)] += 1
+    return counts
+
+
 def _build_batch_index(results: list) -> dict:
     """Summarise batch records into a per-item outcome index.
 
@@ -1581,6 +1616,8 @@ def _build_batch_index(results: list) -> dict:
     """
 
     items: list[dict] = []
+    severity_totals = {name: 0 for name in VALID_SEVERITIES}
+    severity_score = 0
     for position, record in enumerate(results):
         error = record.get("error")
         if error:
@@ -1611,12 +1648,27 @@ def _build_batch_index(results: list) -> dict:
             item["claims_total"] = int(total)
             item["claims_verified"] = int(verified)
             item["flagged_count"] = len(record.get("hallucinations_caught") or [])
+        counts = _severity_counts(record)
+        score = sum(SEVERITY_WEIGHTS[name] * counts[name] for name in VALID_SEVERITIES)
+        item["severity_counts"] = counts
+        item["severity_score"] = score
+        for name in VALID_SEVERITIES:
+            severity_totals[name] += counts[name]
+        severity_score += score
         items.append(item)
 
     counts = {name: 0 for name in ("clean", "flagged", "error")}
     for item in items:
         counts[item["status"]] += 1
-    return {"summary": {"total": len(items), **counts}, "items": items}
+    return {
+        "summary": {"total": len(items), **counts},
+        "severity": {
+            "totals": severity_totals,
+            "score": severity_score,
+            "weights": dict(SEVERITY_WEIGHTS),
+        },
+        "items": items,
+    }
 
 
 def cmd_batch(args: argparse.Namespace) -> None:
@@ -1746,9 +1798,10 @@ def cmd_batch(args: argparse.Namespace) -> None:
         print(output)
 
     index_path = getattr(args, "index", None)
+    index = _build_batch_index(results)
     if index_path:
         with open(index_path, "w", encoding="utf-8") as f:
-            f.write(json.dumps(_build_batch_index(results), ensure_ascii=False, indent=2) + "\n")
+            f.write(json.dumps(index, ensure_ascii=False, indent=2) + "\n")
         if not getattr(args, "quiet", False):
             print(f"Batch index written to {index_path}", file=sys.stderr)
 
@@ -1759,6 +1812,14 @@ def cmd_batch(args: argparse.Namespace) -> None:
         if resumed:
             summary += f" ({resumed} resumed)"
         print(summary + f", {errors} error(s).", file=sys.stderr)
+        severity = index["severity"]
+        print(
+            f"Severity score: {severity['score']}"
+            f" (critical {severity['totals']['critical']},"
+            f" major {severity['totals']['major']},"
+            f" minor {severity['totals']['minor']})",
+            file=sys.stderr,
+        )
     flagged = sum(bool(r.get("hallucinations_caught")) for r in results)
     return 1 if getattr(args, "fail_on_hallucination", False) and flagged else 0
 
