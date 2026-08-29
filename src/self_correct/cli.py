@@ -504,6 +504,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Delay in seconds between items (to avoid rate limits)",
     )
     batch.add_argument(
+        "--jobs", type=_positive_int, default=1, metavar="N",
+        help="Process up to N items concurrently, results stay in input order (default: 1)",
+    )
+    batch.add_argument(
         "--max-calls", type=int, default=None, metavar="N",
         help="Cap LLM API calls per item; later claims are logged as skipped",
     )
@@ -559,6 +563,24 @@ def _read_prompt(prompt: Optional[str], file_path: Optional[str]) -> str:
     if prompt:
         return prompt
     raise ValueError("Either --prompt or --file must be provided.")
+
+
+def _positive_int(value: str) -> int:
+    """argparse type for options that must be a positive integer."""
+
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
+def _positive_float(value: str) -> float:
+    """argparse type for options that must be a positive number."""
+
+    parsed = float(value)
+    if not (parsed > 0) or parsed == float("inf"):
+        raise argparse.ArgumentTypeError("must be a positive number")
+    return parsed
 
 
 def _detect_output_format(output_path: Optional[str], format_override: Optional[str]) -> str:
@@ -1671,6 +1693,39 @@ def _build_batch_index(results: list) -> dict:
     }
 
 
+def _process_batch_item(
+    hallucinator_factory,
+    item_id: str,
+    prompt: str,
+    model: str,
+    max_tokens: int | None,
+) -> dict:
+    """Run one batch item to an output record, never raising.
+
+    A fresh hallucinator per item keeps the LLM call budget and claim cache
+    scoped to that item, matching the documented ``--max-calls`` semantics,
+    and makes concurrent workers independent of each other. Failures are
+    folded into the record's ``error`` field so output line counts always
+    match the input.
+    """
+
+    try:
+        generate_kwargs = {"model": model, "prompt": prompt}
+        if max_tokens is not None:
+            generate_kwargs["max_tokens"] = max_tokens
+        result = hallucinator_factory().generate(**generate_kwargs)
+        record = result.to_dict()
+        record["id"] = item_id
+        record["prompt"] = prompt
+        return record
+    except Exception as exc:
+        return {
+            "id": item_id,
+            "prompt": prompt,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
 def cmd_batch(args: argparse.Namespace) -> None:
     """Execute the batch subcommand: process a JSONL file."""
     if getattr(args, "schema", False):
@@ -1707,19 +1762,21 @@ def cmd_batch(args: argparse.Namespace) -> None:
         except ValueError as exc:
             raise SystemExit(f"--checks: {exc}")
 
-    hallu = AntiHallucinator(
-        client=OpenAI(),
-        strictness=args.strictness,
-        tools=tools or None,
-        cache_size=0 if args.no_cache else 256,
-        cache_ttl=getattr(args, "cache_ttl", None),
-        max_llm_calls=getattr(args, "max_calls", None),
-        content_checks=batch_checks,
-        model_draft=getattr(args, "model_draft", None),
-        model_extract=getattr(args, "model_extract", None),
-        model_verify=getattr(args, "model_verify", None),
-        model_correct=getattr(args, "model_correct", None),
-    )
+    def make_hallucinator() -> AntiHallucinator:
+        return AntiHallucinator(
+            client=OpenAI(),
+            strictness=args.strictness,
+            tools=tools or None,
+            cache_size=0 if args.no_cache else 256,
+            cache_ttl=getattr(args, "cache_ttl", None),
+            max_llm_calls=getattr(args, "max_calls", None),
+            content_checks=batch_checks,
+            model_draft=getattr(args, "model_draft", None),
+            model_extract=getattr(args, "model_extract", None),
+            model_verify=getattr(args, "model_verify", None),
+            model_correct=getattr(args, "model_correct", None),
+        )
+    hallu = make_hallucinator()
 
     # Read input
     items: list[dict] = []
@@ -1742,6 +1799,7 @@ def cmd_batch(args: argparse.Namespace) -> None:
         print(f"Processing {total} item(s)...", file=sys.stderr)
 
     results: list[dict] = []
+    work: list[tuple[int, str, str]] = []
     for idx, item in enumerate(items, 1):
         item_id = item.get("id", str(idx))
         prompt = item.get("prompt", "")
@@ -1758,29 +1816,54 @@ def cmd_batch(args: argparse.Namespace) -> None:
                 print(f"  [{idx}/{total}] '{item_id}' already done", file=sys.stderr)
             continue
 
-        if not getattr(args, "quiet", False):
-            print(f"  [{idx}/{total}] Processing '{item_id}'...", file=sys.stderr)
-        try:
-            generate_kwargs = {"model": args.model, "prompt": prompt}
-            max_tokens = getattr(args, "max_tokens", None)
-            if max_tokens is not None:
-                generate_kwargs["max_tokens"] = max_tokens
-            result = hallu.generate(**generate_kwargs)
-            result_dict = result.to_dict()
-            result_dict["id"] = item_id
-            result_dict["prompt"] = prompt
-            results.append(result_dict)
-        except Exception as exc:
-            results.append({
-                "id": item_id,
-                "prompt": prompt,
-                "error": f"{type(exc).__name__}: {exc}",
-            })
-            if not getattr(args, "quiet", False):
-                print(f"  [{idx}/{total}] Error: {exc}", file=sys.stderr)
+        work.append((idx, item_id, prompt))
 
-        if args.delay > 0 and idx < total:
-            time.sleep(args.delay)
+    jobs = getattr(args, "jobs", 1) or 1
+    if jobs > 1:
+        from concurrent.futures import ThreadPoolExecutor
+
+        def run_worker(entry: tuple[int, str, str]) -> dict:
+            idx, item_id, prompt = entry
+            if not getattr(args, "quiet", False):
+                print(f"  [{idx}/{total}] Processing '{item_id}'...", file=sys.stderr)
+            record = _process_batch_item(
+                make_hallucinator, item_id, prompt, args.model,
+                getattr(args, "max_tokens", None),
+            )
+            if "error" in record and not getattr(args, "quiet", False):
+                print(f"  [{idx}/{total}] Error: {record['error']}", file=sys.stderr)
+            if args.delay > 0:
+                time.sleep(args.delay)
+            return record
+
+        with ThreadPoolExecutor(max_workers=jobs) as executor:
+            for record in executor.map(run_worker, work):
+                results.append(record)
+    else:
+        for idx, item_id, prompt in work:
+            if not getattr(args, "quiet", False):
+                print(f"  [{idx}/{total}] Processing '{item_id}'...", file=sys.stderr)
+            try:
+                generate_kwargs = {"model": args.model, "prompt": prompt}
+                max_tokens = getattr(args, "max_tokens", None)
+                if max_tokens is not None:
+                    generate_kwargs["max_tokens"] = max_tokens
+                result = hallu.generate(**generate_kwargs)
+                result_dict = result.to_dict()
+                result_dict["id"] = item_id
+                result_dict["prompt"] = prompt
+                results.append(result_dict)
+            except Exception as exc:
+                results.append({
+                    "id": item_id,
+                    "prompt": prompt,
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
+                if not getattr(args, "quiet", False):
+                    print(f"  [{idx}/{total}] Error: {exc}", file=sys.stderr)
+
+            if args.delay > 0 and idx < total:
+                time.sleep(args.delay)
 
     # Write output
     if getattr(args, "format", "jsonl") == "json":
