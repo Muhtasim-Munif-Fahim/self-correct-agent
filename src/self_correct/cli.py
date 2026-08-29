@@ -419,6 +419,23 @@ def _build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true", help="Print the lint report as JSON"
     )
 
+    policy_template_parser = sub.add_parser(
+        "policy-template",
+        help="Write a starter verification policy file covering the current schema",
+    )
+    policy_template_parser.add_argument(
+        "output", nargs="?", default="policy.json",
+        help="Output path for the starter policy (default: policy.json)",
+    )
+    policy_template_parser.add_argument(
+        "--force", action="store_true",
+        help="Overwrite the file if it already exists",
+    )
+    policy_template_parser.add_argument(
+        "--stdout", action="store_true",
+        help="Print the starter policy to stdout instead of writing a file",
+    )
+
     # upgrade subcommand
     upgrade = sub.add_parser("upgrade", help="Suggest upgrading to the latest version")
 
@@ -1766,6 +1783,25 @@ def cmd_config_validate(args: argparse.Namespace) -> None:
         print(f"Validation failed: invalid JSON - {e}", file=sys.stderr)
 
 
+def _cmd_policy_template(args: argparse.Namespace) -> int:
+    """Write a starter verification policy built from the current schema."""
+    text = json.dumps(VerificationPolicy.starter_template(), indent=2) + "\n"
+    if args.stdout:
+        print(text, end="")
+        return 0
+    target = Path(args.output)
+    if target.exists() and not args.force:
+        print(
+            f"policy-template: '{args.output}' already exists; pass --force to overwrite",
+            file=sys.stderr,
+        )
+        return 1
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8")
+    print(f"Starter policy written to {args.output}")
+    return 0
+
+
 def cmd_config_lint_policy(args: argparse.Namespace) -> int:
     """Lint a verification policy file for consistency and issues."""
     from pathlib import Path
@@ -1905,6 +1941,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         cmd_info()
     elif args.command == "estimate":
         cmd_estimate(args)
+    elif args.command == "policy-template":
+        return _cmd_policy_template(args)
     elif args.command == "config":
         if args.config_command == "init":
             cmd_config_init(args)

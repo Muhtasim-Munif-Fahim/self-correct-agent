@@ -25,7 +25,7 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -491,6 +491,33 @@ class VerificationPolicy:
         except (OSError, json.JSONDecodeError) as exc:
             raise ValueError(f"cannot read verification policy '{source}': {exc}") from exc
         return cls.from_dict(payload)
+
+    @classmethod
+    def starter_template(cls) -> Dict[str, Any]:
+        """Return a starter policy JSON object covering every supported field.
+
+        The values form a working first policy: a verified-ratio floor of
+        90%, two tolerated flagged claims, one tolerated critical claim, and
+        a hallucination-density ceiling. Every dataclass field appears so the
+        template doubles as a schema reference and parses cleanly through
+        :meth:`from_dict`.
+        """
+        template: Dict[str, Any] = {
+            "min_verified_ratio": 0.9,
+            "min_verified_claims": 0,
+            "max_flagged_claims": 2,
+            "require_claims": True,
+            "min_evidence_ratio": 0.0,
+            "min_evidence_claims": 0,
+            "max_hallucination_density": 3.0,
+            "max_critical_claims": 1,
+        }
+        missing = [field.name for field in fields(cls) if field.name not in template]
+        if missing:
+            raise RuntimeError(
+                "starter policy template is missing fields: " + ", ".join(missing)
+            )
+        return template
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.min_verified_ratio <= 1.0:
