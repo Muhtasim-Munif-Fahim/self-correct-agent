@@ -411,6 +411,109 @@ class AntiHallucinationResponse:
 
         return "\n".join(lines)
 
+    def to_html(self, include_log: bool = False) -> str:
+        """
+        Format the response as a self-contained HTML report.
+
+        Mirrors :meth:`to_markdown` but wraps the same content in a single
+        HTML document with inline styles, so the file opens in any browser
+        without external assets. All response text is escaped, so content
+        that looks like markup is displayed as text.
+        """
+        import html as _html
+
+        def esc(value: object) -> str:
+            return _html.escape(str(value), quote=False)
+
+        parts: List[str] = []
+        parts.append("<!DOCTYPE html>")
+        parts.append('<html lang="en">')
+        parts.append("<head>")
+        parts.append('<meta charset="utf-8">')
+        parts.append("<title>Self-Correct Agent Report</title>")
+        parts.append("<style>")
+        parts.append(
+            "body{font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;"
+            "max-width:52rem;margin:2rem auto;padding:0 1rem;line-height:1.55;color:#1f2328}"
+        )
+        parts.append("h1,h2{border-bottom:1px solid #d1d9e0;padding-bottom:.3rem}")
+        parts.append("table{border-collapse:collapse;margin:1rem 0}")
+        parts.append("th,td{text-align:left;padding:.35rem .8rem .35rem 0;vertical-align:top}")
+        parts.append("th{color:#59636e;font-weight:600}")
+        parts.append("pre{background:#f6f8fa;border:1px solid #d1d9e0;"
+                     "border-radius:6px;padding:.9rem;overflow-x:auto;white-space:pre-wrap}")
+        parts.append("ul,ol{padding-left:1.4rem}")
+        parts.append(".flagged{color:#cf222e}")
+        parts.append(".verified{color:#1a7f37}")
+        parts.append("</style>")
+        parts.append("</head>")
+        parts.append("<body>")
+        parts.append("<h1>Self-Correct Agent Report</h1>")
+
+        rows: List[tuple[str, str]] = [
+            ("Tokens used", str(self.token_usage.total_tokens)),
+            ("Duration", f"{self.elapsed_seconds:.2f}s"),
+        ]
+        if self.phase_timings:
+            breakdown = ", ".join(
+                f"{name} {seconds:.2f}s"
+                for name, seconds in self.phase_timings.items()
+            )
+            rows.append(("Phase timings", breakdown))
+        rows.append(("Hallucinations caught", str(len(self.hallucinations_caught))))
+        rows.append((
+            "Hallucination density",
+            f"{self.hallucination_density():.2f} per 100 words",
+        ))
+        report = self.budget_report()
+        if report["exhausted"]:
+            rows.append((
+                "LLM call budget",
+                f"exhausted; {len(report['skipped_claims'])} claim(s) left unverified",
+            ))
+
+        parts.append("<table>")
+        for label, value in rows:
+            parts.append(
+                f"<tr><th>{esc(label)}</th><td>{esc(value)}</td></tr>"
+            )
+        parts.append("</table>")
+
+        if self.hallucinations_caught:
+            parts.append("<h2>Flagged Claims</h2>")
+            parts.append("<ol>")
+            for h in self.hallucinations_caught:
+                parts.append(
+                    f'<li><span class="flagged">[{classify_severity(h)}]</span> '
+                    f"{esc(h)}</li>"
+                )
+            parts.append("</ol>")
+
+        parts.append("<h2>Final Output</h2>")
+        parts.append(f"<pre>{esc(self.content)}</pre>")
+
+        if include_log and self.verification_log:
+            parts.append("<h2>Verification Log</h2>")
+            parts.append("<ul>")
+            for entry in self.verification_log:
+                claim = entry.get("claim", "N/A")
+                valid = entry.get("is_valid")
+                mark = "\u2713" if valid else "\u2717"
+                css = "verified" if valid else "flagged"
+                cached = " (cached)" if entry.get("cached") else ""
+                parts.append(
+                    f'<li><span class="{css}">{esc(mark)}</span> '
+                    f"<strong>{esc(claim)}</strong>{esc(cached)}</li>"
+                )
+                critique = entry.get("critique", "")
+                if critique:
+                    parts.append(f"<li><em>Critique:</em> {esc(critique[:200])}</li>")
+            parts.append("</ul>")
+
+        parts.append("</body>")
+        parts.append("</html>")
+        return "\n".join(parts)
+
 
 @dataclass(frozen=True)
 class VerificationDecision:

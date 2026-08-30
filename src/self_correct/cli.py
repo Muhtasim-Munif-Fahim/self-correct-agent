@@ -93,7 +93,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     verify.add_argument(
         "--output-format", default=None,
-        choices=["json", "markdown", "text", "csv"],
+        choices=["json", "markdown", "html", "text", "csv"],
         help="Output format (overrides auto-detection from --output)",
     )
     verify.add_argument(
@@ -226,7 +226,7 @@ def _build_parser() -> argparse.ArgumentParser:
     resume.add_argument("--output", "-o", default=None, help="Write the new result to a file")
     resume.add_argument(
         "--output-format",
-        choices=["json", "markdown", "text", "csv"],
+        choices=["json", "markdown", "html", "text", "csv"],
         default=None,
     )
     resume.add_argument("--include-log", action="store_true")
@@ -631,6 +631,8 @@ def _detect_output_format(output_path: Optional[str], format_override: Optional[
             return "json"
         if output_path.endswith(".md"):
             return "markdown"
+        if output_path.endswith(".html") or output_path.endswith(".htm"):
+            return "html"
     return "text"
 
 
@@ -894,6 +896,8 @@ def cmd_verify(args: argparse.Namespace) -> None:
         output = result.to_json()
     elif output_format == "markdown":
         output = result.to_markdown(include_log=args.include_log)
+    elif output_format == "html":
+        output = result.to_html(include_log=args.include_log)
     elif output_format == "csv":
         import csv, io
         buf = io.StringIO()
