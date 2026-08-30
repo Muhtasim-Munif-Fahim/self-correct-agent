@@ -575,6 +575,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Environment variable holding the API key (default: OPENAI_API_KEY)",
     )
     batch.add_argument(
+        "--dry-run", action="store_true",
+        help=(
+            "Show which items would run, be resumed from --resume-from, or "
+            "be skipped, without making any API calls"
+        ),
+    )
+    batch.add_argument(
         "--schema", action="store_true",
         help="Print the output record schema and exit without processing",
     )
@@ -1683,6 +1690,77 @@ def _is_completed(record: object) -> bool:
     return isinstance(record, dict) and "error" not in record
 
 
+def _plan_batch_items(
+    items: list, prior_results: dict
+) -> list:
+    """Classify every input item as work, resumed or skipped, in input order.
+
+    Each entry carries the 1-based index and item id so a dry-run plan can
+    be printed exactly as the real run would number its progress lines.
+    ``resumed`` entries also keep the completed prior record so the caller
+    can reuse it without touching the LLM.
+    """
+
+    plan: list[dict] = []
+    for idx, item in enumerate(items, 1):
+        item_id = item.get("id", str(idx))
+        prompt = item.get("prompt", "")
+        entry = {"index": idx, "id": item_id, "prompt": prompt}
+        if not prompt:
+            entry["action"] = "skipped"
+            entry["record"] = None
+            plan.append(entry)
+            continue
+        prior_record = prior_results.get(str(item_id))
+        if prior_record is not None and _is_completed(prior_record):
+            entry["action"] = "resumed"
+            entry["record"] = prior_record
+        else:
+            entry["action"] = "work"
+            entry["record"] = None
+        plan.append(entry)
+    return plan
+
+
+def _print_batch_plan(
+    args: argparse.Namespace, plan: list, resume_path: Optional[str]
+) -> None:
+    """Describe the batch run that ``--dry-run`` is standing in for.
+
+    Nothing here touches the network: the point is to confirm which items
+    will be processed, reused from a prior output file, or skipped before
+    spending any LLM budget.
+    """
+
+    counts = {"work": 0, "resumed": 0, "skipped": 0}
+    for entry in plan:
+        counts[entry["action"]] += 1
+
+    print("DRY RUN - no API calls will be made")
+    print("-" * 58)
+    print(f"{'Input':<18}{args.input}")
+    print(f"{'Model':<18}{args.model}")
+    print(f"{'Strictness':<18}{args.strictness}")
+    print(f"{'Jobs':<18}{getattr(args, 'jobs', 1)}")
+    if resume_path:
+        print(f"{'Resume':<18}{resume_path}")
+    print(f"{'Output':<18}{args.output or 'stdout'} ({args.format})")
+    print()
+    print(
+        f"{len(plan)} item(s): {counts['work']} to process, "
+        f"{counts['resumed']} resumed, {counts['skipped']} skipped"
+    )
+    print()
+    for entry in plan:
+        if entry["action"] == "work":
+            action = "process"
+        elif entry["action"] == "resumed":
+            action = "resume"
+        else:
+            action = "skip"
+        print(f"  [{entry['index']}/{len(plan)}] {action:<8}{entry['id']}")
+
+
 #: Weights applied to a batch item's flagged claims when computing its
 #: severity score. Critical failures count triple, major double, minor once.
 SEVERITY_WEIGHTS = {"critical": 3, "major": 2, "minor": 1}
@@ -1832,6 +1910,29 @@ def cmd_batch(args: argparse.Namespace) -> None:
             print(f"batch: {exc}", file=sys.stderr)
             return 2
 
+    # Read input
+    items: list[dict] = []
+    with open(args.input, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                items.append(json.loads(line))
+
+    if args.max_items:
+        items = items[:args.max_items]
+
+    total = len(items)
+    if total == 0:
+        if not getattr(args, "quiet", False):
+            print("No items to process.", file=sys.stderr)
+        return
+
+    plan = _plan_batch_items(items, prior_results)
+
+    if getattr(args, "dry_run", False):
+        _print_batch_plan(args, plan, resume_path)
+        return 0
+
     from openai import OpenAI
 
     tools = []
@@ -1864,45 +1965,23 @@ def cmd_batch(args: argparse.Namespace) -> None:
         )
     hallu = make_hallucinator()
 
-    # Read input
-    items: list[dict] = []
-    with open(args.input, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                items.append(json.loads(line))
-
-    if args.max_items:
-        items = items[:args.max_items]
-
-    total = len(items)
-    if total == 0:
-        if not getattr(args, "quiet", False):
-            print("No items to process.", file=sys.stderr)
-        return
-
     if not getattr(args, "quiet", False):
         print(f"Processing {total} item(s)...", file=sys.stderr)
 
     results: list[dict] = []
     work: list[tuple[int, str, str]] = []
-    for idx, item in enumerate(items, 1):
-        item_id = item.get("id", str(idx))
-        prompt = item.get("prompt", "")
-        if not prompt:
+    for entry in plan:
+        if entry["action"] == "skipped":
             if not getattr(args, "quiet", False):
-                print(f"  [{idx}/{total}] Skipping item '{item_id}': no prompt", file=sys.stderr)
+                print(f"  [{entry['index']}/{total}] Skipping item '{entry['id']}': no prompt", file=sys.stderr)
             continue
-
-        prior_record = prior_results.get(str(item_id))
-        if prior_record is not None and _is_completed(prior_record):
-            results.append(prior_record)
+        if entry["action"] == "resumed":
+            results.append(entry["record"])
             resumed += 1
             if not getattr(args, "quiet", False):
-                print(f"  [{idx}/{total}] '{item_id}' already done", file=sys.stderr)
+                print(f"  [{entry['index']}/{total}] '{entry['id']}' already done", file=sys.stderr)
             continue
-
-        work.append((idx, item_id, prompt))
+        work.append((entry["index"], entry["id"], entry["prompt"]))
 
     jobs = getattr(args, "jobs", 1) or 1
     if jobs > 1:
