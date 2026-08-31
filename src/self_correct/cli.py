@@ -582,6 +582,15 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     batch.add_argument(
+        "--plan-json",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Write the dry-run plan as machine-readable JSON to PATH "
+            "without making any API calls"
+        ),
+    )
+    batch.add_argument(
         "--schema", action="store_true",
         help="Print the output record schema and exit without processing",
     )
@@ -1765,6 +1774,41 @@ def _print_batch_plan(
         print(f"  [{entry['index']}/{len(plan)}] {action:<8}{entry['id']}")
 
 
+def _write_plan_json(path: str, plan: list) -> None:
+    """Write the batch plan as machine-readable JSON.
+
+    Each entry records the item's position, id, prompt and the action the
+    real run would take (``work``, ``resumed`` or ``skipped``), so a caller
+    can predict the run without spending any LLM budget. Resumed entries also
+    carry the completed prior record the run would reuse.
+    """
+
+    counts = {"work": 0, "resumed": 0, "skipped": 0}
+    for entry in plan:
+        counts[entry["action"]] += 1
+
+    payload = {
+        "total": len(plan),
+        "counts": counts,
+        "items": [
+            {
+                "index": entry["index"],
+                "id": entry["id"],
+                "action": entry["action"],
+                "prompt": entry["prompt"],
+                "record": entry.get("record"),
+            }
+            for entry in plan
+        ],
+    }
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
 #: Weights applied to a batch item's flagged claims when computing its
 #: severity score. Critical failures count triple, major double, minor once.
 SEVERITY_WEIGHTS = {"critical": 3, "major": 2, "minor": 1}
@@ -1935,6 +1979,13 @@ def cmd_batch(args: argparse.Namespace) -> None:
 
     if getattr(args, "dry_run", False):
         _print_batch_plan(args, plan, resume_path)
+        return 0
+
+    plan_json_path = getattr(args, "plan_json", None)
+    if plan_json_path:
+        _write_plan_json(plan_json_path, plan)
+        if not getattr(args, "quiet", False):
+            print(f"Batch plan written to {plan_json_path}", file=sys.stderr)
         return 0
 
     from openai import OpenAI
