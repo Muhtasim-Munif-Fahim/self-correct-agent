@@ -599,6 +599,18 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Exit with status 1 when any processed item flags a claim",
     )
+    batch.add_argument(
+        "--max-critical", type=_non_negative_int, default=None, metavar="N",
+        help="Fail the batch if aggregated critical claims exceed N (default: unlimited)",
+    )
+    batch.add_argument(
+        "--max-major", type=_non_negative_int, default=None, metavar="N",
+        help="Fail the batch if aggregated major claims exceed N (default: unlimited)",
+    )
+    batch.add_argument(
+        "--max-minor", type=_non_negative_int, default=None, metavar="N",
+        help="Fail the batch if aggregated minor claims exceed N (default: unlimited)",
+    )
 
     return parser
 
@@ -619,6 +631,15 @@ def _positive_int(value: str) -> int:
     parsed = int(value)
     if parsed < 1:
         raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
+def _non_negative_int(value: str) -> int:
+    """argparse type for options that must be a non-negative integer."""
+
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be a non-negative integer")
     return parsed
 
 
@@ -1842,6 +1863,25 @@ def _severity_counts(record: dict) -> dict:
     return counts
 
 
+def _severity_budget_reasons(totals: dict, args: argparse.Namespace) -> list:
+    """Return human-readable reasons the batch exceeded its severity budget.
+
+    A threshold of ``None`` means unlimited; a threshold of ``0`` still fails
+    the batch when that severity is present, matching the per-response policy
+    semantics. An empty list means the batch is within budget.
+    """
+
+    reasons: list[str] = []
+    for name in VALID_SEVERITIES:
+        threshold = getattr(args, f"max_{name}", None)
+        if threshold is None:
+            continue
+        count = int(totals.get(name, 0) or 0)
+        if count > threshold:
+            reasons.append(f"{name} claims {count} exceed {threshold}")
+    return reasons
+
+
 def _build_batch_index(results: list) -> dict:
     """Summarise batch records into a per-item outcome index.
 
@@ -2124,7 +2164,16 @@ def cmd_batch(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
     flagged = sum(bool(r.get("hallucinations_caught")) for r in results)
-    return 1 if getattr(args, "fail_on_hallucination", False) and flagged else 0
+    exit_code = 1 if getattr(args, "fail_on_hallucination", False) and flagged else 0
+
+    budget_reasons = _severity_budget_reasons(index["severity"]["totals"], args)
+    if budget_reasons:
+        print(
+            "Batch severity budget exceeded: " + "; ".join(budget_reasons),
+            file=sys.stderr,
+        )
+        exit_code = 1
+    return exit_code
 
 
 def cmd_config_validate(args: argparse.Namespace) -> None:
