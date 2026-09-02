@@ -46,6 +46,11 @@ def record_run(entry: Dict[str, Any], path: Optional[Path] = None) -> None:
 
     target = path or history_path()
     entry = {"timestamp": time.time(), **entry}
+    if "label" in entry:
+        try:
+            entry["label"] = parse_label(entry["label"])
+        except ValueError:
+            entry.pop("label", None)
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         with open(target, "a", encoding="utf-8") as handle:
@@ -67,6 +72,67 @@ def _trim(path: Path) -> None:
             handle.writelines(lines[-MAX_RECORDS:])
     except OSError:
         return
+
+
+def parse_label(raw: object) -> List[str]:
+    """Normalize a label value from the CLI or a recorded run.
+
+    Accepts None (returns []), a single string ("alpha" -> ["alpha"]), or an
+    iterable of strings (["a", "b"]). Each tag is stripped of surrounding
+    whitespace; empty tags raise ``ValueError`` so callers fail fast on
+    accidental double commas.
+    """
+
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        candidates = [part for part in raw.split(",")]
+    elif isinstance(raw, (list, tuple)):
+        candidates = list(raw)
+    else:
+        raise ValueError("label must be a string or a list of strings")
+    tags: List[str] = []
+    for item in candidates:
+        if not isinstance(item, str):
+            raise ValueError("label entries must be strings")
+        tag = item.strip()
+        if not tag:
+            raise ValueError("label entries must be non-empty")
+        tags.append(tag)
+    return tags
+
+
+def filter_runs(
+    runs: List[Dict[str, Any]],
+    *,
+    label: Optional[object] = None,
+    model: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Return only the recorded runs matching the requested label/model filters.
+
+    ``label`` accepts the same shapes as :func:`parse_label` (a comma-separated
+    string or a list of strings). A run matches when its ``label`` field
+    contains every requested tag, so callers can narrow a session to a
+    specific cohort without iterating manually. ``model`` matches the recorded
+    model string exactly; ``None`` leaves that filter open. Runs whose
+    ``label`` field fails to parse are silently treated as unlabeled so an
+    old or hand-edited history file cannot break filtering.
+    """
+
+    targets = parse_label(label)
+    out: List[Dict[str, Any]] = []
+    for run in runs:
+        if model is not None and str(run.get("model", "")) != model:
+            continue
+        if targets:
+            try:
+                run_tags = parse_label(run.get("label"))
+            except ValueError:
+                continue
+            if not all(tag in run_tags for tag in targets):
+                continue
+        out.append(run)
+    return out
 
 
 def iter_runs(path: Optional[Path] = None) -> Iterator[Dict[str, Any]]:
@@ -129,4 +195,19 @@ def aggregate(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
         "total_duration": sum(durations),
         "mean_duration": (sum(durations) / len(durations)) if durations else 0.0,
         "models": dict(sorted(models.items(), key=lambda kv: -kv[1])),
+        "labels": _label_counts(runs),
     }
+
+
+def _label_counts(runs: List[Dict[str, Any]]) -> Dict[str, int]:
+    """Count how often each recorded label tag appears across runs."""
+
+    counts: Dict[str, int] = {}
+    for run in runs:
+        try:
+            tags = parse_label(run.get("label"))
+        except ValueError:
+            continue
+        for tag in tags:
+            counts[tag] = counts.get(tag, 0) + 1
+    return dict(sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))

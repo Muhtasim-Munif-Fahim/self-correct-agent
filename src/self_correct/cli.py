@@ -181,6 +181,16 @@ def _build_parser() -> argparse.ArgumentParser:
             "repeat to layer overrides (later files win)"
         ),
     )
+    verify.add_argument(
+        "--label",
+        action="append",
+        default=None,
+        metavar="TAG",
+        help=(
+            "Tag this run for later grouping (history, stats, sessions-search). "
+            "Accepts a comma-separated list (e.g. 'nightly,smoke') or repeat the flag."
+        ),
+    )
 
     resume = sub.add_parser(
         "resume",
@@ -282,6 +292,14 @@ def _build_parser() -> argparse.ArgumentParser:
     stats_parser = sub.add_parser("stats", help="Aggregate statistics across recorded runs")
     stats_parser.add_argument(
         "--json", action="store_true", help="Print the summary as JSON",
+    )
+    stats_parser.add_argument(
+        "--label", action="append", default=None, metavar="TAG",
+        help="Only include runs tagged with TAG; repeat or comma-separate for AND-of-tags.",
+    )
+    stats_parser.add_argument(
+        "--model", default=None,
+        help="Only include runs recorded with this exact model name.",
     )
 
     cache_parser = sub.add_parser("cache", help="Show claim-cache configuration and effectiveness")
@@ -786,6 +804,13 @@ def _record_verify_run(
         "strictness": args.strictness,
         "tools": list(args.tools or []),
     }
+
+    label_arg = getattr(args, "label", None)
+    if label_arg:
+        try:
+            entry["label"] = history.parse_label(label_arg)
+        except ValueError as exc:
+            print(f"verify: {exc}; ignoring --label", file=sys.stderr)
 
     usage = getattr(result, "token_usage", None)
     if usage is not None:
@@ -1564,7 +1589,12 @@ def _cmd_compare(args: argparse.Namespace) -> int:
 
 def _cmd_stats(args: argparse.Namespace) -> int:
     """Aggregate statistics across every recorded run."""
-    summary = history.aggregate(history.load_runs())
+    runs = history.filter_runs(
+        history.load_runs(),
+        label=getattr(args, "label", None),
+        model=getattr(args, "model", None),
+    )
+    summary = history.aggregate(runs)
 
     if args.json:
         print(json.dumps(summary, indent=2, default=str))
@@ -1593,6 +1623,11 @@ def _cmd_stats(args: argparse.Namespace) -> int:
     print("Models used")
     for model, count in summary["models"].items():
         print(f"  {model:<24}{count}")
+    if summary.get("labels"):
+        print()
+        print("Labels")
+        for tag, count in summary["labels"].items():
+            print(f"  {tag:<24}{count}")
     return 0
 
 
