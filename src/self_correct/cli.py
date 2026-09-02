@@ -388,6 +388,31 @@ def _build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true", help="Print the result as JSON",
     )
 
+    sessions_merge_parser = sub.add_parser(
+        "sessions-merge",
+        help="Combine saved sessions, deduplicating claims by normalized text",
+    )
+    sessions_merge_parser.add_argument(
+        "paths", nargs="+", metavar="PATH",
+        help="Session JSON files or directories to merge (directories are scanned for *.json)",
+    )
+    sessions_merge_parser.add_argument(
+        "--keep", choices=["flag", "verify", "any"], default="flag",
+        help="Which verdict wins on a conflicting claim (default: flag)",
+    )
+    sessions_merge_parser.add_argument(
+        "--on-conflict", choices=["skip", "keep"], default="skip",
+        help="Drop a conflicting claim (skip) or keep the winning verdict only (keep)",
+    )
+    sessions_merge_parser.add_argument(
+        "--output", "-o", default=None,
+        help="Write the merged session JSON to a file (default: stdout)",
+    )
+    sessions_merge_parser.add_argument(
+        "--json", action="store_true",
+        help="Print a JSON summary (sources, invalid, conflicts) instead of just the merged session",
+    )
+
     export_junit_parser = sub.add_parser(
         "export-junit",
         help="Export a saved session as JUnit XML for CI dashboards",
@@ -1234,6 +1259,64 @@ def _cmd_sessions_prune(args: argparse.Namespace) -> int:
         print(f"Kept {len(result['kept'])} newer session(s).")
     if not args.dry_run:
         print(f"Deleted {len(result['deleted'])} file(s).")
+    return 0
+
+
+def _cmd_sessions_merge(args: argparse.Namespace) -> int:
+    """Merge saved sessions, deduplicating claims by normalized text."""
+
+    try:
+        merged = sessions.merge_sessions(
+            args.paths,
+            keep=args.keep,
+            on_conflict=args.on_conflict,
+        )
+    except ValueError as exc:
+        print(f"sessions-merge: {exc}", file=sys.stderr)
+        return 2
+
+    for bad in merged["invalid"]:
+        print(f"sessions-merge: skipped {bad['file']}: {bad['error']}", file=sys.stderr)
+
+    if not merged["source_files"]:
+        print("No valid session files found.", file=sys.stderr)
+        return 2
+
+    session_payload = {
+        "schema_version": sessions.SESSION_SCHEMA_VERSION,
+        "prompt": "",
+        "config": {"merged_from": merged["source_files"]},
+        "result": merged["result"],
+    }
+
+    if args.output:
+        sessions.save_session(args.output, prompt="", config=session_payload["config"], result=merged["result"])
+        if args.json:
+            print(json.dumps({k: merged[k] for k in ("source_files", "invalid", "conflicts")}, indent=2))
+        else:
+            print(
+                f"Merged {len(merged['source_files'])} session(s); "
+                f"{len(merged['result']['verification_log'])} claim(s); "
+                f"{len(merged['conflicts'])} conflict(s) -> {args.output}"
+            )
+        return 0
+
+    if args.json:
+        print(json.dumps(merged, indent=2))
+        return 0
+
+    log = merged["result"]["verification_log"]
+    print(
+        f"Merged {len(merged['source_files'])} session(s); "
+        f"{len(log)} unique claim(s); "
+        f"{len(merged['conflicts'])} conflict(s)."
+    )
+    if merged["conflicts"]:
+        print()
+        print("Conflicts resolved:")
+        for conflict in merged["conflicts"]:
+            print(f"  '{conflict['claim'][:80]}' -> verdicts {conflict['verdicts']} (kept: --keep={args.keep}, --on-conflict={args.on_conflict})")
+    print(json.dumps(session_payload, indent=2))
     return 0
 
 
@@ -2377,6 +2460,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         return _cmd_sessions_stats(args)
     elif args.command == "sessions-search":
         return _cmd_sessions_search(args)
+    elif args.command == "sessions-merge":
+        return _cmd_sessions_merge(args)
     elif args.command == "sessions-prune":
         return _cmd_sessions_prune(args)
     elif args.command == "export-junit":

@@ -311,3 +311,128 @@ def search_sessions(
         "invalid": invalid,
         "matches": matches,
     }
+
+
+def _claim_key(entry: Mapping[str, Any]) -> str:
+    claim = str(entry.get("claim", "")).strip().lower()
+    return claim
+
+
+def merge_sessions(
+    paths: Iterable[str | Path],
+    *,
+    keep: str = "flag",
+    on_conflict: str = "skip",
+) -> Dict[str, Any]:
+    """Combine multiple saved sessions into a single logical result.
+
+    Sessions are loaded from ``paths`` (files or directories via
+    :func:`collect_session_files`); each entry that is not a valid session is
+    listed under ``invalid`` and skipped. The merged verification log keeps
+    one row per normalized claim text, with conflicts resolved by ``keep``
+    (``"flag"`` keeps the flagged verdict, ``"verify"`` keeps the verified
+    verdict, ``"any"`` keeps the first verdict seen). When two sessions
+    disagree on the verdict of the same claim, ``on_conflict`` is applied:
+    ``"skip"`` removes the disputed claim entirely, ``"keep"`` keeps the
+    winning row only (the loser is dropped) so the disagreement is resolved
+    rather than duplicated.
+
+    The returned object mirrors :func:`save_session`'s shape so the consumer
+    can persist it directly with :func:`save_session`. ``source_files`` and
+    ``conflicts`` are diagnostic metadata; ``result.hallucinations_caught``
+    is recomputed from the merged log so downstream flags stay in sync.
+    """
+    if keep not in {"flag", "verify", "any"}:
+        raise ValueError("keep must be 'flag', 'verify', or 'any'")
+    if on_conflict not in {"skip", "keep"}:
+        raise ValueError("on_conflict must be 'skip' or 'keep'")
+
+    invalid: List[Dict[str, str]] = []
+    source_files: List[str] = []
+    seen_keys: Dict[str, Dict[str, Any]] = {}
+    conflicts: List[Dict[str, Any]] = []
+
+    for path in collect_session_files(paths):
+        try:
+            session = load_session(path)
+        except ValueError as exc:
+            invalid.append({"file": str(path), "error": str(exc)})
+            continue
+        source_files.append(str(path))
+        for entry in session.get("result", {}).get("verification_log") or []:
+            if not isinstance(entry, dict):
+                continue
+            if "is_valid" not in entry:
+                continue
+            claim_text = str(entry.get("claim", "")).strip()
+            if not claim_text:
+                continue
+            key = _claim_key(entry)
+            is_valid = bool(entry.get("is_valid"))
+            existing = seen_keys.get(key)
+            if existing is None:
+                seen_keys[key] = {
+                    "entry": dict(entry),
+                    "source": str(path),
+                    "verdicts": [is_valid],
+                }
+                continue
+            existing["verdicts"].append(is_valid)
+            existing_was_flagged = not bool(existing["entry"].get("is_valid"))
+            new_is_flagged = not is_valid
+            if existing_was_flagged == new_is_flagged:
+                # Same verdict: keep the first one seen.
+                continue
+            conflicts.append(
+                {
+                    "claim": str(entry.get("claim", "")),
+                    "verdicts": list(existing["verdicts"]),
+                    "sources": sorted({existing["source"], str(path)}),
+                }
+            )
+            winner_is_flag = (
+                (keep == "flag" and is_valid is False)
+                or (keep == "verify" and is_valid is True)
+            )
+            if keep == "any":
+                # First verdict seen wins; drop the newcomer.
+                continue
+            existing_wins = (
+                (keep == "flag" and existing_was_flagged)
+                or (keep == "verify" and not existing_was_flagged)
+            )
+            if existing_wins:
+                continue
+            existing["entry"] = dict(entry)
+            existing["source"] = str(path)
+
+    merged_log: List[Dict[str, Any]] = []
+    for key, info in seen_keys.items():
+        if on_conflict == "skip" and len(info["verdicts"]) > 1 and (
+            not all(v == info["verdicts"][0] for v in info["verdicts"])
+        ):
+            continue
+        merged_log.append(info["entry"])
+
+    flagged = [str(entry.get("claim", "")) for entry in merged_log if not entry.get("is_valid")]
+    hallucination_set: List[str] = []
+    for claim in flagged:
+        if claim and claim not in hallucination_set:
+            hallucination_set.append(claim)
+
+    result: Dict[str, Any] = {
+        "status": (
+            "flagged" if hallucination_set else (
+                "verified" if merged_log else "unknown"
+            )
+        ),
+        "content": "",
+        "verification_log": merged_log,
+        "hallucinations_caught": hallucination_set,
+    }
+    return {
+        "source_files": source_files,
+        "invalid": invalid,
+        "conflicts": conflicts,
+        "result": result,
+    }
