@@ -191,6 +191,15 @@ def _build_parser() -> argparse.ArgumentParser:
             "Accepts a comma-separated list (e.g. 'nightly,smoke') or repeat the flag."
         ),
     )
+    verify.add_argument(
+        "--quiet-ok",
+        action="store_true",
+        help=(
+            "In text output, suppress the per-claim 'OK' summary so only the "
+            "flagged claims and the final output are printed. The JSON / "
+            "markdown / HTML outputs already only print what is needed."
+        ),
+    )
 
     resume = sub.add_parser(
         "resume",
@@ -807,6 +816,44 @@ def _format_cost(usage: object, model: str) -> str:
     return f"${cost:.4f}" if cost < 0.01 else f"${cost:.2f}"
 
 
+def _render_text_report(args: argparse.Namespace, result: object) -> str:
+    """Render the text report; respects ``--quiet-ok`` and redacts nothing."""
+
+    lines = [
+        "=" * 60,
+        "SELF-CORRECT AGENT - VERIFICATION REPORT",
+        "=" * 60,
+        "",
+        f"Tokens: {result.token_usage.total_tokens}"
+        f" (prompt {result.token_usage.prompt_tokens},"
+        f" completion {result.token_usage.completion_tokens})",
+        f"Estimated cost: {_format_cost(result.token_usage, args.model)}",
+        f"Duration: {result.elapsed_seconds:.2f}s",
+        f"Hallucinations caught: {len(result.hallucinations_caught)}",
+        "",
+    ]
+    if result.hallucinations_caught:
+        lines.append("--- Flagged Claims ---")
+        for h in result.hallucinations_caught:
+            lines.append(f"  {h}")
+        lines.append("")
+    if not getattr(args, "quiet_ok", False):
+        log = getattr(result, "verification_log", None) or []
+        ok = [entry for entry in log if entry.get("is_valid")]
+        if ok:
+            lines.append("--- OK Claims ---")
+            for entry in ok:
+                claim = str(entry.get("claim", ""))
+                if claim:
+                    lines.append(f"  ok: {claim}")
+            lines.append("")
+    lines.append("--- Final Output ---")
+    lines.append(result.content)
+    lines.append("")
+    lines.append("=" * 60)
+    return "\n".join(lines)
+
+
 def _print_dry_run_plan(
     args: argparse.Namespace, prompt: str, tool_names: list) -> None:
     """Describe the run that --dry-run is standing in for.
@@ -1020,29 +1067,7 @@ def cmd_verify(args: argparse.Namespace) -> None:
         output = buf.getvalue()
     else:
         # text format
-        lines = [
-            "=" * 60,
-            "SELF-CORRECT AGENT - VERIFICATION REPORT",
-            "=" * 60,
-            "",
-            f"Tokens: {result.token_usage.total_tokens}"
-            f" (prompt {result.token_usage.prompt_tokens},"
-            f" completion {result.token_usage.completion_tokens})",
-            f"Estimated cost: {_format_cost(result.token_usage, args.model)}",
-            f"Duration: {result.elapsed_seconds:.2f}s",
-            f"Hallucinations caught: {len(result.hallucinations_caught)}",
-            "",
-        ]
-        if result.hallucinations_caught:
-            lines.append("--- Flagged Claims ---")
-            for h in result.hallucinations_caught:
-                lines.append(f"   {h}")
-            lines.append("")
-        lines.append("--- Final Output ---")
-        lines.append(result.content)
-        lines.append("")
-        lines.append("=" * 60)
-        output = "\n".join(lines)
+        output = _render_text_report(args, result)
 
     if redactor is not None:
         output = redactor.redact(output)
