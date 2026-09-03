@@ -452,6 +452,26 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Maximum number of claims to list per category (default: 20)",
     )
 
+    sessions_review_parser = sub.add_parser(
+        "sessions-review",
+        help="Render a Markdown review of a saved session for human reviewers",
+    )
+    sessions_review_parser.add_argument(
+        "session", help="Session JSON file created by --save-session",
+    )
+    sessions_review_parser.add_argument(
+        "--top", type=int, default=5,
+        help="How many top flagged claims to surface (default: 5)",
+    )
+    sessions_review_parser.add_argument(
+        "--json", action="store_true",
+        help="Print a JSON summary with both markdown body and counts",
+    )
+    sessions_review_parser.add_argument(
+        "--output", "-o", default=None,
+        help="Write the review to a file instead of stdout",
+    )
+
     export_sqlite_parser = sub.add_parser(
         "sessions-export-sqlite",
         help="Export a saved session's verification log to a SQLite database",
@@ -1382,6 +1402,28 @@ def _cmd_sessions_export_sqlite(args: argparse.Namespace) -> int:
         print(f"sessions-export-sqlite: {exc}", file=sys.stderr)
         return 2
     print(f"Wrote {rows} claim(s) to {args.output}")
+    return 0
+
+
+def _cmd_sessions_review(args: argparse.Namespace) -> int:
+    """Render a Markdown review of a saved session."""
+    from . import review as review_module
+    try:
+        session = sessions.load_session(args.session)
+    except ValueError as exc:
+        print(f"sessions-review: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        payload = review_module.render_session_review_with_counts(session, top_n=args.top)
+        text = json.dumps(payload, indent=2)
+    else:
+        text = review_module.render_session_review(session, top_n=args.top)
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        print(f"Review written to {args.output}")
+        return 0
+    print(text)
     return 0
 
 
@@ -2587,6 +2629,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         return _cmd_sessions_diff(args)
     elif args.command == "sessions-export-sqlite":
         return _cmd_sessions_export_sqlite(args)
+    elif args.command == "sessions-review":
+        return _cmd_sessions_review(args)
     elif args.command == "sessions-merge":
         return _cmd_sessions_merge(args)
     elif args.command == "sessions-prune":
