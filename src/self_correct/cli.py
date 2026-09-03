@@ -443,6 +443,21 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Maximum number of claims to list per category (default: 20)",
     )
 
+    export_sqlite_parser = sub.add_parser(
+        "sessions-export-sqlite",
+        help="Export a saved session's verification log to a SQLite database",
+    )
+    export_sqlite_parser.add_argument(
+        "session", help="Session JSON file created by --save-session",
+    )
+    export_sqlite_parser.add_argument(
+        "--output", "-o", required=True, help="Destination SQLite file path",
+    )
+    export_sqlite_parser.add_argument(
+        "--table", default="verification_log",
+        help="Base table name (default: verification_log)",
+    )
+
     export_csv_parser = sub.add_parser(
         "export-csv",
         help="Export a saved session's claim verdicts as CSV rows",
@@ -1326,6 +1341,22 @@ def _cmd_sessions_diff(args: argparse.Namespace) -> int:
         f"- Unchanged flagged: {diff['unchanged_flagged']}"
     )
     print("\n".join(lines))
+    return 0
+
+
+def _cmd_sessions_export_sqlite(args: argparse.Namespace) -> int:
+    """Export a saved session's verification log to a SQLite database."""
+    try:
+        session = sessions.load_session(args.session)
+    except ValueError as exc:
+        print(f"sessions-export-sqlite: {exc}", file=sys.stderr)
+        return 2
+    try:
+        rows = sessions.export_to_sqlite(args.output, session, table_name=args.table)
+    except ValueError as exc:
+        print(f"sessions-export-sqlite: {exc}", file=sys.stderr)
+        return 2
+    print(f"Wrote {rows} claim(s) to {args.output}")
     return 0
 
 
@@ -2529,6 +2560,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         return _cmd_sessions_search(args)
     elif args.command == "sessions-diff":
         return _cmd_sessions_diff(args)
+    elif args.command == "sessions-export-sqlite":
+        return _cmd_sessions_export_sqlite(args)
     elif args.command == "sessions-merge":
         return _cmd_sessions_merge(args)
     elif args.command == "sessions-prune":

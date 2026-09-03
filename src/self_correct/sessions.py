@@ -436,3 +436,94 @@ def merge_sessions(
         "conflicts": conflicts,
         "result": result,
     }
+
+
+def export_to_sqlite(
+    sqlite_path: str | Path,
+    session: Mapping[str, Any],
+    *,
+    table_name: str = "verification_log",
+) -> int:
+    """Write the session's verification log to a SQLite database.
+
+    Two tables are created:
+      - ``{table_name}``: one row per (claim, critique, verdict) record;
+      - ``{table_name}_meta``: one row summarising the session provenance
+        (session_id, prompt, model, status, source_file).
+
+    The function is dependency-free (only the standard library
+    ``sqlite3`` module is used). Returns the number of rows written to
+    the verification log table. An existing database at ``sqlite_path`` is
+    replaced. ``table_name`` must be a safe SQL identifier; ``ValueError``
+    is raised for anything else.
+    """
+
+    import sqlite3
+
+    if not isinstance(table_name, str) or not table_name:
+        raise ValueError("table_name must be a non-empty string")
+    if not table_name.replace("_", "").isalnum():
+        raise ValueError("table_name must be alphanumeric with underscores")
+    log_table = table_name
+    meta_table = f"{table_name}_meta"
+
+    path = Path(sqlite_path)
+    if path.parent and path.parent != Path(""):
+        path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        try:
+            path.unlink()
+        except OSError:
+            # On Windows the file may be in use; truncate instead.
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.truncate(0)
+    with sqlite3.connect(path) as connection:
+        cursor = connection.cursor()
+        cursor.execute(
+            f"CREATE TABLE {log_table} ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "claim TEXT, "
+            "is_valid INTEGER, "
+            "critique TEXT, "
+            "step INTEGER, "
+            "timestamp TEXT"
+            ")"
+        )
+        cursor.execute(
+            f"CREATE TABLE {meta_table} ("
+            "id INTEGER PRIMARY KEY, "
+            "session_prompt TEXT, "
+            "config_json TEXT, "
+            "status TEXT, "
+            "source_file TEXT"
+            ")"
+        )
+        rows = 0
+        for entry in session.get("result", {}).get("verification_log") or []:
+            if not isinstance(entry, dict):
+                continue
+            cursor.execute(
+                f"INSERT INTO {log_table} (claim, is_valid, critique, step, timestamp) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    str(entry.get("claim", "")),
+                    int(bool(entry.get("is_valid", False))),
+                    str(entry.get("critique", "")),
+                    entry.get("step"),
+                    str(entry.get("timestamp", "")),
+                ),
+            )
+            rows += 1
+        cursor.execute(
+            f"INSERT INTO {meta_table} "
+            "(session_prompt, config_json, status, source_file) "
+            "VALUES (?, ?, ?, ?)",
+            (
+                str(session.get("prompt", "")),
+                json.dumps(session.get("config", {}), default=str),
+                str((session.get("result") or {}).get("status", "")),
+                str(path.with_suffix(".json")),
+            ),
+        )
+        connection.commit()
+    return rows
