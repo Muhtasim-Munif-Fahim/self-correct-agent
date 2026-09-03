@@ -425,6 +425,24 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Write the XML to a file instead of stdout",
     )
 
+    sessions_diff_parser = sub.add_parser(
+        "sessions-diff",
+        help="Compare per-claim verdicts between two saved sessions",
+    )
+    sessions_diff_parser.add_argument(
+        "baseline", help="Baseline session JSON file",
+    )
+    sessions_diff_parser.add_argument(
+        "current", help="Current session JSON file",
+    )
+    sessions_diff_parser.add_argument(
+        "--json", action="store_true", help="Print the diff as JSON",
+    )
+    sessions_diff_parser.add_argument(
+        "--max-listed", type=int, default=20,
+        help="Maximum number of claims to list per category (default: 20)",
+    )
+
     export_csv_parser = sub.add_parser(
         "export-csv",
         help="Export a saved session's claim verdicts as CSV rows",
@@ -1259,6 +1277,55 @@ def _cmd_sessions_prune(args: argparse.Namespace) -> int:
         print(f"Kept {len(result['kept'])} newer session(s).")
     if not args.dry_run:
         print(f"Deleted {len(result['deleted'])} file(s).")
+    return 0
+
+
+def _cmd_sessions_diff(args: argparse.Namespace) -> int:
+    """Print a per-claim diff between two saved sessions."""
+    try:
+        baseline = sessions.load_session(args.baseline)
+        current = sessions.load_session(args.current)
+    except ValueError as exc:
+        print(f"sessions-diff: {exc}", file=sys.stderr)
+        return 2
+
+    diff = sessions.diff_sessions(baseline, current)
+    if args.json:
+        print(json.dumps(diff, indent=2))
+        return 0
+
+    if args.max_listed < 1:
+        print("sessions-diff: --max-listed must be at least 1", file=sys.stderr)
+        return 2
+
+    def _lines(label: str, items: list[str]) -> list[str]:
+        if not items:
+            return [f"- {label}: (none)"]
+        shown = items[: args.max_listed]
+        out = [f"- {label} ({len(items)}):"]
+        out.extend(f"  - {item}" for item in shown)
+        if len(items) > len(shown):
+            out.append(f"  ... and {len(items) - len(shown)} more")
+        return out
+
+    lines = [f"Baseline claims: {diff['baseline_claims']}"]
+    lines.append(f"Current claims: {diff['current_claims']}")
+    lines.append("")
+    lines.extend(_lines("Resolved (flagged -> verified)", diff["resolved"]))
+    lines.append("")
+    lines.extend(_lines("Regressed (verified -> flagged)", diff["regressed"]))
+    lines.append("")
+    lines.extend(_lines("Added claims", diff["added"]))
+    lines.append("")
+    lines.extend(_lines("Removed claims", diff["removed"]))
+    lines.append("")
+    lines.append(
+        f"- Unchanged verified: {diff['unchanged_verified']}"
+    )
+    lines.append(
+        f"- Unchanged flagged: {diff['unchanged_flagged']}"
+    )
+    print("\n".join(lines))
     return 0
 
 
@@ -2460,6 +2527,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         return _cmd_sessions_stats(args)
     elif args.command == "sessions-search":
         return _cmd_sessions_search(args)
+    elif args.command == "sessions-diff":
+        return _cmd_sessions_diff(args)
     elif args.command == "sessions-merge":
         return _cmd_sessions_merge(args)
     elif args.command == "sessions-prune":
