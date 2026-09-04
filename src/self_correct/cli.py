@@ -139,7 +139,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Apply JSON-defined content checks to the final text",
     )
     verify.add_argument(
-        "--provider", choices=["openai", "ollama", "custom"], default="openai",
+        "--provider", choices=["openai", "ollama", "anthropic", "custom"], default="openai",
         help="Where to send requests (default: openai)",
     )
     verify.add_argument(
@@ -231,7 +231,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     resume.add_argument(
         "--provider",
-        choices=["openai", "ollama", "custom"],
+        choices=["openai", "ollama", "anthropic", "custom"],
         default=None,
         help="Override the saved provider",
     )
@@ -668,7 +668,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Output format (default: jsonl)",
     )
     batch.add_argument(
-        "--provider", choices=["openai", "ollama", "custom"], default="openai",
+        "--provider", choices=["openai", "ollama", "anthropic", "custom"], default="openai",
         help="Where to send requests (default: openai)",
     )
     batch.add_argument(
@@ -776,6 +776,7 @@ def _detect_output_format(output_path: Optional[str], format_override: Optional[
 PROVIDER_BASE_URLS = {
     "openai": None,
     "ollama": "http://localhost:11434/v1",
+    "anthropic": "https://api.anthropic.com/v1",
     "custom": None,
 }
 
@@ -805,6 +806,14 @@ def _build_client(args: argparse.Namespace):
         # A local Ollama server ignores the key but the client insists on one.
         if provider == "ollama":
             api_key = "ollama"
+        # Anthropic's OpenAI-compatible endpoint requires ANTHROPIC_API_KEY.
+        elif provider == "anthropic":
+            api_key = os.environ.get("ANTHROPIC_API_KEY")
+            if not api_key:
+                raise SystemExit(
+                    "No API key found in $" + key_env + " or $ANTHROPIC_API_KEY. "
+                    "Set one, or pass --api-key-env to name a different variable."
+                )
         else:
             raise SystemExit(
                 f"No API key found in ${key_env}. Set it, or pass --api-key-env "
