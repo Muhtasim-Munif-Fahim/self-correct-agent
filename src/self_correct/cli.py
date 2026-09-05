@@ -505,6 +505,26 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Write the citations to a file instead of stdout",
     )
 
+    sessions_bundle_parser = sub.add_parser(
+        "sessions-bundle",
+        help="Bundle saved sessions into a portable archive with a manifest",
+    )
+    sessions_bundle_parser.add_argument(
+        "paths", nargs="+", metavar="PATH",
+        help="Session JSON files or directories to bundle (directories scan for *.json)",
+    )
+    sessions_bundle_parser.add_argument(
+        "--output", "-o", required=True, metavar="PATH",
+        help="Destination archive path (.tar.gz or .tar)",
+    )
+    sessions_bundle_parser.add_argument(
+        "--no-compress", action="store_true",
+        help="Write a plain .tar instead of a gzip-compressed archive",
+    )
+    sessions_bundle_parser.add_argument(
+        "--json", action="store_true", help="Print the bundle summary as JSON",
+    )
+
     export_sqlite_parser = sub.add_parser(
         "sessions-export-sqlite",
         help="Export a saved session's verification log to a SQLite database",
@@ -1536,6 +1556,38 @@ def _cmd_sessions_citations(args: argparse.Namespace) -> int:
         print(f"Wrote {len(sources)} source(s) to {args.output}")
     else:
         sys.stdout.write(text)
+    return 0
+
+
+def _cmd_sessions_bundle(args: argparse.Namespace) -> int:
+    """Bundle saved sessions into a portable archive with a manifest."""
+
+    from . import bundle as bundle_module
+
+    try:
+        result = bundle_module.create_bundle(
+            args.paths, args.output, compress=not args.no_compress
+        )
+    except ValueError as exc:
+        print(f"sessions-bundle: {exc}", file=sys.stderr)
+        return 2
+    for bad in result["invalid"]:
+        print(
+            f"sessions-bundle: skipped {bad['file']}: {bad['error']}",
+            file=sys.stderr,
+        )
+    if result["sessions"] == 0:
+        print("No valid session files found.", file=sys.stderr)
+        return 2
+
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        kind = "gzip-compressed tar" if result["compressed"] else "tar"
+        print(
+            f"Bundled {result['sessions']} session(s) into {result['archive']} "
+            f"({kind}, {result['size_bytes']} bytes)"
+        )
     return 0
 
 
@@ -2744,6 +2796,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         return _cmd_sessions_gate(args)
     elif args.command == "sessions-citations":
         return _cmd_sessions_citations(args)
+    elif args.command == "sessions-bundle":
+        return _cmd_sessions_bundle(args)
     elif args.command == "sessions-review":
         return _cmd_sessions_review(args)
     elif args.command == "sessions-merge":
