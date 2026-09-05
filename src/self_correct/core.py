@@ -327,6 +327,44 @@ class AntiHallucinationResponse:
             "elapsed_seconds": round(self.elapsed_seconds, 3),
         }
 
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AntiHallucinationResponse":
+        """Rebuild a response from a :meth:`to_dict` payload.
+
+        A persisted result carries the raw verification log, hallucination
+        list, token usage and timings. The derived summaries (claim counts,
+        severity mix, evidence trail) are recomputed from those, exactly as
+        they were at generation time, so a saved result can be re-gated
+        against a new policy without touching the model again.
+        """
+
+        if not isinstance(data, dict):
+            raise ValueError("verification result must be a JSON object")
+        raw_log = data.get("verification_log") or []
+        verification_log = [
+            entry for entry in raw_log if isinstance(entry, dict)
+        ]
+        raw_usage = data.get("token_usage") or {}
+        token_usage = TokenUsage(
+            prompt_tokens=int(raw_usage.get("prompt_tokens", 0) or 0),
+            completion_tokens=int(raw_usage.get("completion_tokens", 0) or 0),
+        )
+        return cls(
+            content=str(data.get("content", "")),
+            hallucinations_caught=[
+                str(item)
+                for item in (data.get("hallucinations_caught") or [])
+            ],
+            verification_log=verification_log,
+            token_usage=token_usage,
+            elapsed_seconds=float(data.get("elapsed_seconds", 0.0) or 0.0),
+            phase_timings={
+                str(key): float(value)
+                for key, value in (data.get("phase_timings") or {}).items()
+                if isinstance(value, (int, float))
+            },
+        )
+
     def to_json(self, indent: int = 2, ensure_ascii: bool = False) -> str:
         """
         Serialize the response to a JSON string.

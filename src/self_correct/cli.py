@@ -472,6 +472,22 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Write the review to a file instead of stdout",
     )
 
+    sessions_gate_parser = sub.add_parser(
+        "sessions-gate",
+        help="Re-evaluate saved sessions against a verification policy",
+    )
+    sessions_gate_parser.add_argument(
+        "paths", nargs="+", metavar="PATH",
+        help="Session JSON files or directories to scan (directories are scanned for *.json)",
+    )
+    sessions_gate_parser.add_argument(
+        "--policy", action="append", default=None, metavar="PATH",
+        help="Verification policy (repeatable for layered overrides, later wins)",
+    )
+    sessions_gate_parser.add_argument(
+        "--json", action="store_true", help="Print the gate results as JSON",
+    )
+
     export_sqlite_parser = sub.add_parser(
         "sessions-export-sqlite",
         help="Export a saved session's verification log to a SQLite database",
@@ -1436,9 +1452,50 @@ def _cmd_sessions_review(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_sessions_gate(args: argparse.Namespace) -> int:
+    """Re-evaluate saved sessions against a verification policy."""
+
+    try:
+        policy = _resolve_policy(getattr(args, "policy", None))
+    except ValueError as exc:
+        print(f"sessions-gate: {exc}", file=sys.stderr)
+        return 2
+    if policy is None:
+        print("sessions-gate: --policy is required", file=sys.stderr)
+        return 2
+
+    verdicts = sessions.gate_sessions(args.paths, policy)
+
+    for bad in verdicts["invalid"]:
+        print(
+            f"sessions-gate: skipped {bad['file']}: {bad['error']}",
+            file=sys.stderr,
+        )
+    if not verdicts["results"]:
+        print("No valid session files found.", file=sys.stderr)
+        return 2
+
+    failed = sum(1 for row in verdicts["results"] if not row["passed"])
+
+    if args.json:
+        print(json.dumps(verdicts, indent=2))
+    else:
+        passed = len(verdicts["results"]) - failed
+        for row in verdicts["results"]:
+            mark = "PASS" if row["passed"] else "FAIL"
+            print(
+                f"{mark} {row['file']} "
+                f"({row['verified_claims']}/{row['total_claims']} verified)"
+            )
+            for reason in row["reasons"]:
+                print(f"    - {reason}")
+        print()
+        print(f"Gate: {passed} passed, {failed} failed")
+    return 1 if failed else 0
+
+
 def _cmd_sessions_merge(args: argparse.Namespace) -> int:
     """Merge saved sessions, deduplicating claims by normalized text."""
-
     try:
         merged = sessions.merge_sessions(
             args.paths,
@@ -2638,6 +2695,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         return _cmd_sessions_diff(args)
     elif args.command == "sessions-export-sqlite":
         return _cmd_sessions_export_sqlite(args)
+    elif args.command == "sessions-gate":
+        return _cmd_sessions_gate(args)
     elif args.command == "sessions-review":
         return _cmd_sessions_review(args)
     elif args.command == "sessions-merge":

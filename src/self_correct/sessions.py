@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
-from .core import VALID_SEVERITIES, classify_severity
+from .core import VALID_SEVERITIES, AntiHallucinationResponse, classify_severity
 
 SESSION_SCHEMA_VERSION = 1
 
@@ -103,6 +103,43 @@ def diff_sessions(
         "baseline_claims": len(before),
         "current_claims": len(after),
     }
+
+def gate_sessions(
+    paths: Iterable[str | Path],
+    policy: "VerificationPolicy",
+) -> Dict[str, Any]:
+    """Re-evaluate saved sessions against a verification policy.
+
+    Each session is loaded and its persisted result is replayed through
+    ``policy.evaluate`` so a tightened gate can be applied to
+    already-computed sessions without re-running the model. Returns one
+    verdict row per valid session plus an ``invalid`` list for files that
+    could not be loaded.
+    """
+
+    results: List[Dict[str, Any]] = []
+    invalid: List[Dict[str, str]] = []
+    for path in collect_session_files(paths):
+        try:
+            session = load_session(path)
+        except ValueError as exc:
+            invalid.append({"file": str(path), "error": str(exc)})
+            continue
+        result = session.get("result") or {}
+        response = AntiHallucinationResponse.from_dict(result)
+        decision = policy.evaluate(response)
+        results.append({
+            "file": str(path),
+            "status": str(result.get("status", "unknown")),
+            "passed": bool(decision.passed),
+            "total_claims": decision.total_claims,
+            "verified_claims": decision.verified_claims,
+            "flagged_claims": decision.flagged_claims,
+            "evidence_claims": decision.evidence_claims,
+            "reasons": list(decision.reasons),
+        })
+    return {"results": results, "invalid": invalid}
+
 
 def collect_session_files(paths: Iterable[str | Path]) -> List[Path]:
     """Expand file and directory arguments into saved-session files.
