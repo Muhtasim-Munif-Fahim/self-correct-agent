@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
+from . import citations
 from .core import VALID_SEVERITIES, AntiHallucinationResponse, classify_severity
 
 SESSION_SCHEMA_VERSION = 1
@@ -234,6 +235,33 @@ def aggregate_sessions(paths: Iterable[str | Path]) -> Dict[str, Any]:
         },
     }
     return {"sessions": summaries, "invalid": invalid, "totals": totals}
+
+
+def collect_citations(paths: Iterable[str | Path]) -> Dict[str, Any]:
+    """Collect and deduplicate evidence sources cited across saved sessions.
+
+    Mirrors :func:`search_sessions` and :func:`aggregate_sessions`: a
+    directory expands to its ``*.json`` files, duplicates are dropped, and
+    files that do not load as sessions are reported under ``invalid``
+    without aborting the scan. ``sources`` is deduplicated by URL via
+    :func:`citations.collect_evidence_sources`.
+    """
+
+    loaded: List[Dict[str, Any]] = []
+    invalid: List[Dict[str, str]] = []
+    scanned = 0
+    for path in collect_session_files(paths):
+        try:
+            loaded.append(load_session(path))
+        except ValueError as exc:
+            invalid.append({"file": str(path), "error": str(exc)})
+            continue
+        scanned += 1
+    return {
+        "sources": citations.collect_evidence_sources(loaded),
+        "scanned": scanned,
+        "invalid": invalid,
+    }
 
 
 def prune_sessions(

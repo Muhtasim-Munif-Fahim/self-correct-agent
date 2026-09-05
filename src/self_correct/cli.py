@@ -488,6 +488,23 @@ def _build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true", help="Print the gate results as JSON",
     )
 
+    sessions_citations_parser = sub.add_parser(
+        "sessions-citations",
+        help="Collect evidence sources cited across saved sessions",
+    )
+    sessions_citations_parser.add_argument(
+        "paths", nargs="+", metavar="PATH",
+        help="Session JSON files or directories to scan (directories are scanned for *.json)",
+    )
+    sessions_citations_parser.add_argument(
+        "--format", choices=["json", "text", "bibtex"], default="text",
+        help="Output format (default: text)",
+    )
+    sessions_citations_parser.add_argument(
+        "--output", "-o", default=None,
+        help="Write the citations to a file instead of stdout",
+    )
+
     export_sqlite_parser = sub.add_parser(
         "sessions-export-sqlite",
         help="Export a saved session's verification log to a SQLite database",
@@ -1492,6 +1509,34 @@ def _cmd_sessions_gate(args: argparse.Namespace) -> int:
         print()
         print(f"Gate: {passed} passed, {failed} failed")
     return 1 if failed else 0
+
+
+def _cmd_sessions_citations(args: argparse.Namespace) -> int:
+    """Collect evidence sources cited across saved sessions."""
+
+    from . import citations
+
+    result = sessions.collect_citations(args.paths)
+    for bad in result["invalid"]:
+        print(
+            f"sessions-citations: skipped {bad['file']}: {bad['error']}",
+            file=sys.stderr,
+        )
+    if not result["scanned"]:
+        print("No valid session files found.", file=sys.stderr)
+        return 2
+
+    sources = result["sources"]
+    fmt = getattr(args, "format", "text")
+    text = citations.format_sources(sources, fmt)
+    if args.output:
+        target = Path(args.output)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+        print(f"Wrote {len(sources)} source(s) to {args.output}")
+    else:
+        sys.stdout.write(text)
+    return 0
 
 
 def _cmd_sessions_merge(args: argparse.Namespace) -> int:
@@ -2697,6 +2742,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         return _cmd_sessions_export_sqlite(args)
     elif args.command == "sessions-gate":
         return _cmd_sessions_gate(args)
+    elif args.command == "sessions-citations":
+        return _cmd_sessions_citations(args)
     elif args.command == "sessions-review":
         return _cmd_sessions_review(args)
     elif args.command == "sessions-merge":
