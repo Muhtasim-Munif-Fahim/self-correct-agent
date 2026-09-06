@@ -237,6 +237,82 @@ def aggregate_sessions(paths: Iterable[str | Path]) -> Dict[str, Any]:
     return {"sessions": summaries, "invalid": invalid, "totals": totals}
 
 
+def verification_coverage(paths: Iterable[str | Path]) -> Dict[str, Any]:
+    """Roll up how much of each session's claim set was actually verified.
+
+    Every ``verification_log`` entry is one of a verdict (``is_valid`` present),
+    a claim left unverified because the LLM call budget ran out (carrying a
+    ``skipped_by_budget`` marker), or a phase marker. This rolls those up per
+    session and across the batch into a coverage ratio: the share of claimed
+    verdicts that were reached, versus skipped by a budget halt.
+
+    Sessions with no verdict or skipped entries are treated as fully covered
+    (ratio 1.0) since there was nothing the budget could have skipped.
+    """
+
+    rows: List[Dict[str, Any]] = []
+    invalid: List[Dict[str, str]] = []
+    for path in collect_session_files(paths):
+        try:
+            session = load_session(path)
+        except ValueError as exc:
+            invalid.append({"file": str(path), "error": str(exc)})
+            continue
+
+        result = session.get("result") or {}
+        log = result.get("verification_log") or []
+        verified = flagged = skipped = 0
+        budget_exhausted = False
+        for entry in log:
+            if not isinstance(entry, dict):
+                continue
+            is_claim = bool(entry.get("claim"))
+            if entry.get("skipped_by_budget"):
+                if is_claim:
+                    skipped += 1
+                budget_exhausted = True
+                continue
+            if "is_valid" not in entry or not is_claim:
+                continue
+            if entry.get("is_valid"):
+                verified += 1
+            else:
+                flagged += 1
+
+        total = verified + flagged + skipped
+        rows.append({
+            "file": str(path),
+            "modified": Path(path).stat().st_mtime,
+            "claims": total,
+            "verified": verified,
+            "flagged": flagged,
+            "skipped": skipped,
+            "coverage_ratio": (
+                round((verified + flagged) / total, 3) if total else 1.0
+            ),
+            "budget_exhausted": budget_exhausted,
+        })
+
+    rows.sort(key=lambda item: item["modified"])
+    claims = sum(row["claims"] for row in rows)
+    verified = sum(row["verified"] for row in rows)
+    flagged = sum(row["flagged"] for row in rows)
+    skipped = sum(row["skipped"] for row in rows)
+    totals: Dict[str, Any] = {
+        "sessions": len(rows),
+        "invalid_files": len(invalid),
+        "claims": claims,
+        "verified": verified,
+        "flagged": flagged,
+        "skipped": skipped,
+        "coverage_ratio": round((verified + flagged) / claims, 3) if claims else 1.0,
+        "budget_exhausted_sessions": sum(
+            1 for row in rows if row["budget_exhausted"]
+        ),
+    }
+    return {"sessions": rows, "invalid": invalid, "totals": totals}
+
+
 def estimate_session_cost(
     session: Mapping[str, Any],
     model: Optional[str] = None,

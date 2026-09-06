@@ -541,6 +541,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Price every session with this model (default: each session's recorded model)",
     )
 
+    sessions_coverage_parser = sub.add_parser(
+        "sessions-coverage",
+        help="Report claim coverage and budget-skipped claims across saved sessions",
+    )
+    sessions_coverage_parser.add_argument(
+        "paths", nargs="+", metavar="PATH",
+        help="Session JSON files or directories to scan (directories are scanned for *.json)",
+    )
+    sessions_coverage_parser.add_argument(
+        "--json", action="store_true", help="Print the coverage report as JSON",
+    )
+
     sessions_consensus_parser = sub.add_parser(
         "sessions-consensus",
         help="Score how stably each claim was verified across saved sessions",
@@ -1682,6 +1694,47 @@ def _cmd_sessions_cost(args: argparse.Namespace) -> int:
         f"{totals['prompt_tokens']} prompt + {totals['completion_tokens']} completion "
         f"-> ${totals['cost_usd']:.6f}{note}"
     )
+    return 0
+
+
+def _cmd_sessions_coverage(args: argparse.Namespace) -> int:
+    """Report how much of each session's claim set was actually verified."""
+
+    aggregate = sessions.verification_coverage(args.paths)
+    for bad in aggregate["invalid"]:
+        print(
+            f"sessions-coverage: skipped {bad['file']}: {bad['error']}",
+            file=sys.stderr,
+        )
+    if not aggregate["sessions"]:
+        print("No valid session files found.", file=sys.stderr)
+        return 2
+
+    if args.json:
+        print(json.dumps(aggregate, indent=2))
+        return 0
+
+    totals = aggregate["totals"]
+    for row in aggregate["sessions"]:
+        mark = "BUDGET" if row["budget_exhausted"] else "ok  "
+        print(
+            f"{mark} {row['file']}: "
+            f"{row['verified']} verified / {row['flagged']} flagged / "
+            f"{row['skipped']} skipped of {row['claims']} claim(s) "
+            f"({row['coverage_ratio']:.1%} coverage)"
+        )
+    print()
+    print(
+        f"Coverage across {totals['sessions']} session(s): "
+        f"{totals['verified']} verified / {totals['flagged']} flagged / "
+        f"{totals['skipped']} skipped of {totals['claims']} claim(s) "
+        f"({totals['coverage_ratio']:.1%})"
+    )
+    if totals["budget_exhausted_sessions"]:
+        print(
+            f"  {totals['budget_exhausted_sessions']} session(s) hit an "
+            "LLM call budget."
+        )
     return 0
 
 
@@ -2966,6 +3019,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         return _cmd_sessions_bundle(args)
     elif args.command == "sessions-cost":
         return _cmd_sessions_cost(args)
+    elif args.command == "sessions-coverage":
+        return _cmd_sessions_coverage(args)
     elif args.command == "sessions-consensus":
         return _cmd_sessions_consensus(args)
     elif args.command == "sessions-review":
