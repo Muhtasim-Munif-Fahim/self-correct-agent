@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from . import csvreport, history, jsonlreport, junit, sessions, templates
+from . import csvreport, history, jsonlreport, junit, mdreport, sessions, templates
 from .core import (
     MODEL_PRICING,
     VALID_SEVERITIES,
@@ -562,6 +562,18 @@ def _build_parser() -> argparse.ArgumentParser:
     export_jsonl_parser.add_argument(
         "--output", "-o", default=None,
         help="Write the JSONL to a file instead of stdout",
+    )
+
+    export_markdown_parser = sub.add_parser(
+        "export-markdown",
+        help="Export a saved session's claim verdicts as a Markdown table",
+    )
+    export_markdown_parser.add_argument(
+        "session", help="Session JSON created by --save-session"
+    )
+    export_markdown_parser.add_argument(
+        "--output", "-o", default=None,
+        help="Write the Markdown table to a file instead of stdout",
     )
 
     template_parser = sub.add_parser(
@@ -1708,6 +1720,26 @@ def _cmd_export_jsonl(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_export_markdown(args: argparse.Namespace) -> int:
+    """Export one saved session's per-claim verdicts as a Markdown table."""
+
+    try:
+        session = sessions.load_session(args.session)
+    except ValueError as exc:
+        print(f"export-markdown: {exc}", file=sys.stderr)
+        return 2
+
+    md_text = mdreport.result_to_markdown(session)
+    if args.output:
+        target = Path(args.output)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(md_text, encoding="utf-8")
+        print(f"Markdown report written to {args.output}")
+    else:
+        print(md_text, end="")
+    return 0
+
+
 
 def cmd_estimate(args: argparse.Namespace) -> None:
     """Estimate token count for a prompt."""
@@ -2810,6 +2842,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         return _cmd_export_csv(args)
     elif args.command == "export-jsonl":
         return _cmd_export_jsonl(args)
+    elif args.command == "export-markdown":
+        return _cmd_export_markdown(args)
     elif args.command == "stats":
         return _cmd_stats(args)
     elif args.command == "cache":
