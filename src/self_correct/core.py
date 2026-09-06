@@ -197,6 +197,51 @@ class TokenUsage:
         )
 
 
+def _snapshot_tokens(usage: "TokenUsage") -> Tuple[int, int]:
+    """Capture the aggregate counters so a phase's delta can be computed."""
+
+    return usage.prompt_tokens, usage.completion_tokens
+
+
+def _record_phase_tokens(
+    phase_tokens: Dict[str, Dict[str, int]],
+    phase: str,
+    before: Tuple[int, int],
+    usage: "TokenUsage",
+) -> None:
+    """Attribute the tokens consumed since ``before`` to ``phase``."""
+
+    started_prompt, started_completion = before
+    delta_prompt = usage.prompt_tokens - started_prompt
+    delta_completion = usage.completion_tokens - started_completion
+    phase_tokens[phase] = {
+        "prompt_tokens": delta_prompt,
+        "completion_tokens": delta_completion,
+        "total_tokens": delta_prompt + delta_completion,
+    }
+
+
+def _restore_phase_tokens(raw: object) -> Dict[str, Dict[str, int]]:
+    """Rehydrate per-phase token snapshots, ignoring malformed entries."""
+
+    if not isinstance(raw, dict):
+        return {}
+    restored: Dict[str, Dict[str, int]] = {}
+    for phase, snapshot in raw.items():
+        if not isinstance(phase, str) or not isinstance(snapshot, dict):
+            continue
+        cleaned = {
+            key: int(value)
+            for key, value in snapshot.items()
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+        }
+        if {"prompt_tokens", "completion_tokens", "total_tokens"}.issubset(
+            cleaned.keys()
+        ):
+            restored[phase] = cleaned
+    return restored
+
+
 @dataclass
 class AntiHallucinationResponse:
     """Response object returned by AntiHallucinator.generate()."""
@@ -207,6 +252,7 @@ class AntiHallucinationResponse:
     token_usage: TokenUsage = field(default_factory=TokenUsage)
     elapsed_seconds: float = 0.0
     phase_timings: Dict[str, float] = field(default_factory=dict)
+    token_usage_by_phase: Dict[str, Dict[str, int]] = field(default_factory=dict)
 
     def evaluate(self, policy: "VerificationPolicy") -> "VerificationDecision":
         """Evaluate this response against a reusable release policy."""
@@ -368,6 +414,10 @@ class AntiHallucinationResponse:
             "phase_timings": {
                 name: round(seconds, 3) for name, seconds in self.phase_timings.items()
             },
+            "token_usage_by_phase": {
+                phase: dict(snapshot)
+                for phase, snapshot in self.token_usage_by_phase.items()
+            },
             "elapsed_seconds": round(self.elapsed_seconds, 3),
         }
 
@@ -407,6 +457,9 @@ class AntiHallucinationResponse:
                 for key, value in (data.get("phase_timings") or {}).items()
                 if isinstance(value, (int, float))
             },
+            token_usage_by_phase=_restore_phase_tokens(
+                data.get("token_usage_by_phase")
+            ),
         )
 
     def to_json(self, indent: int = 2, ensure_ascii: bool = False) -> str:
@@ -453,6 +506,13 @@ class AntiHallucinationResponse:
                 for name, seconds in self.phase_timings.items()
             )
             lines.append(f"- **Phase timings**: {breakdown}")
+        if self.token_usage_by_phase:
+            breakdown = ", ".join(
+                f"{name} {snap['total_tokens']}t "
+                f"({snap['prompt_tokens']}p/{snap['completion_tokens']}c)"
+                for name, snap in self.token_usage_by_phase.items()
+            )
+            lines.append(f"- **Per-phase tokens**: {breakdown}")
         _diversity = self.evidence_diversity()
         if _diversity["domains"]:
             lines.append(
@@ -549,6 +609,13 @@ class AntiHallucinationResponse:
                 for name, seconds in self.phase_timings.items()
             )
             rows.append(("Phase timings", breakdown))
+        if self.token_usage_by_phase:
+            breakdown = ", ".join(
+                f"{name} {snap['total_tokens']}t "
+                f"({snap['prompt_tokens']}p/{snap['completion_tokens']}c)"
+                for name, snap in self.token_usage_by_phase.items()
+            )
+            rows.append(("Per-phase tokens", breakdown))
         rows.append(("Hallucinations caught", str(len(self.hallucinations_caught))))
         rows.append((
             "Hallucination density",
@@ -1546,11 +1613,13 @@ class AntiHallucinator:
         usage = TokenUsage()
         budget = _CallBudget(self.max_llm_calls) if self.max_llm_calls else None
         phase_timings: Dict[str, float] = {}
+        phase_tokens: Dict[str, Dict[str, int]] = {}
 
         # Phase 1: Drafting
         if budget is not None and not budget.try_acquire():
             raise RuntimeError("LLM call budget exhausted before drafting")
         phase_started = time.monotonic()
+        draft_before = _snapshot_tokens(usage)
         draft = self._call_llm(
             model=model_draft,
             system_prompt=self._draft_system_prompt,
@@ -1558,6 +1627,7 @@ class AntiHallucinator:
             usage=usage,
             max_tokens=max_tokens,
         )
+        _record_phase_tokens(phase_tokens, "drafting", draft_before, usage)
         phase_timings["drafting"] = time.monotonic() - phase_started
 
         if self.strictness == 0.0:
@@ -1565,6 +1635,7 @@ class AntiHallucinator:
                 content=draft,
                 verification_log=[{"phase": "bypassed", "reason": "strictness=0.0"}],
                 token_usage=usage,
+                token_usage_by_phase=dict(phase_tokens),
                 elapsed_seconds=time.monotonic() - start,
                 phase_timings=phase_timings,
             )
@@ -1579,10 +1650,12 @@ class AntiHallucinator:
                     "detail": "extraction skipped: LLM call budget reached",
                 }],
                 token_usage=usage,
+                token_usage_by_phase=dict(phase_tokens),
                 elapsed_seconds=time.monotonic() - start,
                 phase_timings=phase_timings,
             )
         phase_started = time.monotonic()
+        extract_before = _snapshot_tokens(usage)
         claims_text = self._call_llm(
             model=model_extract,
             system_prompt=self._extraction_prompt,
@@ -1590,6 +1663,7 @@ class AntiHallucinator:
             usage=usage,
             max_tokens=max_tokens,
         )
+        _record_phase_tokens(phase_tokens, "extraction", extract_before, usage)
         phase_timings["extraction"] = time.monotonic() - phase_started
 
         claims = self._parse_claims(claims_text)
@@ -1604,6 +1678,7 @@ class AntiHallucinator:
                     "raw_extraction": claims_text,
                 }],
                 token_usage=usage,
+                token_usage_by_phase=dict(phase_tokens),
                 elapsed_seconds=time.monotonic() - start,
                 phase_timings=phase_timings,
             )
@@ -1617,6 +1692,7 @@ class AntiHallucinator:
         hallucinations_caught: List[str] = []
 
         phase_started = time.monotonic()
+        verify_before = _snapshot_tokens(usage)
         for claim in claims:
             if budget is not None and not budget.try_acquire():
                 verification_log.append({
@@ -1640,6 +1716,7 @@ class AntiHallucinator:
                     f"Claim '{claim}' flagged: {result['critique']}"
                 )
 
+        _record_phase_tokens(phase_tokens, "verification", verify_before, usage)
         phase_timings["verification"] = time.monotonic() - phase_started
 
         # Phase 4: Correction
@@ -1648,6 +1725,7 @@ class AntiHallucinator:
                 content=draft,
                 verification_log=verification_log,
                 token_usage=usage,
+                token_usage_by_phase=dict(phase_tokens),
                 elapsed_seconds=time.monotonic() - start,
                 phase_timings=phase_timings,
             )
@@ -1659,11 +1737,13 @@ class AntiHallucinator:
                 verification_log=verification_log
                 + [{"phase": "correction", "skipped_by_budget": True}],
                 token_usage=usage,
+                token_usage_by_phase=dict(phase_tokens),
                 elapsed_seconds=time.monotonic() - start,
                 phase_timings=phase_timings,
             )
 
         phase_started = time.monotonic()
+        correct_before = _snapshot_tokens(usage)
         final_content = self._call_llm(
             model=model_correct,
             system_prompt=self._correction_prompt,
@@ -1676,6 +1756,7 @@ class AntiHallucinator:
             max_tokens=max_tokens,
         )
 
+        _record_phase_tokens(phase_tokens, "correction", correct_before, usage)
         phase_timings["correction"] = time.monotonic() - phase_started
 
         return AntiHallucinationResponse(
@@ -1683,6 +1764,7 @@ class AntiHallucinator:
             hallucinations_caught=hallucinations_caught,
             verification_log=verification_log,
             token_usage=usage,
+            token_usage_by_phase=dict(phase_tokens),
             elapsed_seconds=time.monotonic() - start,
             phase_timings=phase_timings,
         )
@@ -1816,14 +1898,17 @@ class AntiHallucinator:
         usage = TokenUsage()
         budget = _CallBudget(self.max_llm_calls) if self.max_llm_calls else None
         phase_timings: Dict[str, float] = {}
+        phase_tokens: Dict[str, Dict[str, int]] = {}
 
         # Phase 1 & 2 are sequential (need the draft before extraction)
         if budget is not None and not budget.try_acquire():
             raise RuntimeError("LLM call budget exhausted before drafting")
         phase_started = time.monotonic()
+        draft_before = _snapshot_tokens(usage)
         draft = await asyncio.to_thread(
             self._call_llm, model_draft, self._draft_system_prompt, prompt, usage
         )
+        _record_phase_tokens(phase_tokens, "drafting", draft_before, usage)
         phase_timings["drafting"] = time.monotonic() - phase_started
 
         if self.strictness == 0.0:
@@ -1831,6 +1916,7 @@ class AntiHallucinator:
                 content=draft,
                 verification_log=[{"phase": "bypassed", "reason": "strictness=0.0"}],
                 token_usage=usage,
+                token_usage_by_phase=dict(phase_tokens),
                 elapsed_seconds=time.monotonic() - start,
                 phase_timings=phase_timings,
             )
@@ -1844,11 +1930,13 @@ class AntiHallucinator:
                     "detail": "extraction skipped: LLM call budget reached",
                 }],
                 token_usage=usage,
+                token_usage_by_phase=dict(phase_tokens),
                 elapsed_seconds=time.monotonic() - start,
                 phase_timings=phase_timings,
             )
 
         phase_started = time.monotonic()
+        extract_before = _snapshot_tokens(usage)
         claims_text = await asyncio.to_thread(
             self._call_llm,
             model_extract,
@@ -1856,6 +1944,7 @@ class AntiHallucinator:
             f"Text to analyze:\n\n{draft}",
             usage,
         )
+        _record_phase_tokens(phase_tokens, "extraction", extract_before, usage)
         phase_timings["extraction"] = time.monotonic() - phase_started
 
         claims = self._parse_claims(claims_text)
@@ -1869,6 +1958,7 @@ class AntiHallucinator:
                     "raw_extraction": claims_text,
                 }],
                 token_usage=usage,
+                token_usage_by_phase=dict(phase_tokens),
                 elapsed_seconds=time.monotonic() - start,
                 phase_timings=phase_timings,
             )
@@ -1911,10 +2001,12 @@ class AntiHallucinator:
                 )
 
         phase_started = time.monotonic()
+        verify_before = _snapshot_tokens(usage)
         verification_results = await asyncio.gather(
             *[_verify(c) for c in claims]
         )
 
+        _record_phase_tokens(phase_tokens, "verification", verify_before, usage)
         phase_timings["verification"] = time.monotonic() - phase_started
         verification_log = list(verification_results)
         hallucinations_caught = [
@@ -1929,6 +2021,7 @@ class AntiHallucinator:
                 content=draft,
                 verification_log=verification_log,
                 token_usage=usage,
+                token_usage_by_phase=dict(phase_tokens),
                 elapsed_seconds=time.monotonic() - start,
                 phase_timings=phase_timings,
             )
@@ -1940,11 +2033,13 @@ class AntiHallucinator:
                 verification_log=verification_log
                 + [{"phase": "correction", "skipped_by_budget": True}],
                 token_usage=usage,
+                token_usage_by_phase=dict(phase_tokens),
                 elapsed_seconds=time.monotonic() - start,
                 phase_timings=phase_timings,
             )
 
         phase_started = time.monotonic()
+        correct_before = _snapshot_tokens(usage)
         final_content = await asyncio.to_thread(
             self._call_llm,
             model_correct,
@@ -1957,6 +2052,7 @@ class AntiHallucinator:
             usage,
         )
 
+        _record_phase_tokens(phase_tokens, "correction", correct_before, usage)
         phase_timings["correction"] = time.monotonic() - phase_started
 
         return AntiHallucinationResponse(
@@ -1964,6 +2060,7 @@ class AntiHallucinator:
             hallucinations_caught=hallucinations_caught,
             verification_log=verification_log,
             token_usage=usage,
+            token_usage_by_phase=dict(phase_tokens),
             elapsed_seconds=time.monotonic() - start,
             phase_timings=phase_timings,
         )
