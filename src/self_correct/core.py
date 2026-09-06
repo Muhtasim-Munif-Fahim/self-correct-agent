@@ -305,6 +305,49 @@ class AntiHallucinationResponse:
             "tools": tools,
         }
 
+    def evidence_diversity(self) -> Dict[str, Any]:
+        """Measure how broadly external evidence is spread across domains.
+
+        Where :meth:`evidence_summary` counts sources and the tools that
+        produced them, this reports the distinct domains the sources resolve to
+        and a diversity ratio ``unique_domains / source_count``. The ratio is
+        high when evidence comes from many different sites and low when several
+        sources all point at pages of the same host, so it flags narrow
+        sourcing even when the raw source count looks healthy. Runs with no
+        attached evidence sources report zeroed counters and an empty domain
+        list.
+        """
+
+        from urllib.parse import urlparse
+
+        counts: Dict[str, int] = {}
+        for entry in self.verification_log:
+            if not isinstance(entry, dict):
+                continue
+            for source in entry.get("evidence_sources", []) or []:
+                if not isinstance(source, dict):
+                    continue
+                url = str(source.get("url", "")).strip()
+                if not url:
+                    continue
+                domain = urlparse(url).netloc.lower()
+                if not domain:
+                    continue
+                counts[domain] = counts.get(domain, 0) + 1
+
+        total = sum(counts.values())
+        unique = len(counts)
+        ratio = unique / total if total else 0.0
+        ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+        return {
+            "unique_domains": unique,
+            "domain_diversity_ratio": round(ratio, 3),
+            "domains": sorted(counts),
+            "top_domains": [
+                {"domain": domain, "count": count} for domain, count in ranked
+            ],
+        }
+
     def to_dict(self) -> Dict[str, Any]:
         """Serialize the response to a plain dictionary."""
         return {
@@ -316,6 +359,7 @@ class AntiHallucinationResponse:
             "budget": self.budget_report(),
             "severity_summary": self.severity_summary(),
             "evidence_summary": self.evidence_summary(),
+            "evidence_diversity": self.evidence_diversity(),
             "token_usage": {
                 "prompt_tokens": self.token_usage.prompt_tokens,
                 "completion_tokens": self.token_usage.completion_tokens,
@@ -409,6 +453,13 @@ class AntiHallucinationResponse:
                 for name, seconds in self.phase_timings.items()
             )
             lines.append(f"- **Phase timings**: {breakdown}")
+        _diversity = self.evidence_diversity()
+        if _diversity["domains"]:
+            lines.append(
+                f"- **Evidence domain diversity**: {len(_diversity['domains'])} "
+                f"distinct domain(s), ratio "
+                f"{_diversity['domain_diversity_ratio']:.2f}"
+            )
         lines.append(f"- **Hallucinations caught**: {len(self.hallucinations_caught)}")
         lines.append(
             f"- **Hallucination density**: {self.hallucination_density():.2f} "
