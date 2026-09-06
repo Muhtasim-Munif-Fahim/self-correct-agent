@@ -541,6 +541,30 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Price every session with this model (default: each session's recorded model)",
     )
 
+    sessions_consensus_parser = sub.add_parser(
+        "sessions-consensus",
+        help="Score how stably each claim was verified across saved sessions",
+    )
+    sessions_consensus_parser.add_argument(
+        "paths", nargs="+", metavar="PATH",
+        help="Session JSON files or directories to scan (directories are scanned for *.json)",
+    )
+    sessions_consensus_parser.add_argument(
+        "--min-sessions", type=_positive_int, default=2, metavar="N",
+        help="Only score claims seen in at least N sessions (default: 2)",
+    )
+    sessions_consensus_parser.add_argument(
+        "--flip-only", action="store_true",
+        help="Only show claims whose verdict was not stable across sessions",
+    )
+    sessions_consensus_parser.add_argument(
+        "--max-listed", type=_non_negative_int, default=50, metavar="N",
+        help="Maximum number of claims listed in text mode (default: 50)",
+    )
+    sessions_consensus_parser.add_argument(
+        "--json", action="store_true", help="Print the consensus report as JSON",
+    )
+
     export_sqlite_parser = sub.add_parser(
         "sessions-export-sqlite",
         help="Export a saved session's verification log to a SQLite database",
@@ -1658,6 +1682,58 @@ def _cmd_sessions_cost(args: argparse.Namespace) -> int:
         f"{totals['prompt_tokens']} prompt + {totals['completion_tokens']} completion "
         f"-> ${totals['cost_usd']:.6f}{note}"
     )
+    return 0
+
+
+def _cmd_sessions_consensus(args: argparse.Namespace) -> int:
+    """Score how stably each claim was verified across saved sessions."""
+
+    try:
+        aggregate = sessions.claim_consensus(
+            args.paths, min_sessions=args.min_sessions
+        )
+    except ValueError as exc:
+        print(f"sessions-consensus: {exc}", file=sys.stderr)
+        return 2
+    for bad in aggregate["invalid"]:
+        print(
+            f"sessions-consensus: skipped {bad['file']}: {bad['error']}",
+            file=sys.stderr,
+        )
+    if not aggregate["scanned"]:
+        print("No valid session files found.", file=sys.stderr)
+        return 2
+
+    claims = aggregate["claims"]
+    if getattr(args, "flip_only", False):
+        claims = [item for item in claims if not item["stable"]]
+
+    if args.json:
+        aggregate["claims"] = claims
+        print(json.dumps(aggregate, indent=2))
+        return 0
+
+    totals = aggregate["totals"]
+    print(
+        f"Scanned {aggregate['scanned']} session(s); "
+        f"{totals['unique_claims']} unique claim(s) seen in >= "
+        f"{aggregate['min_sessions']} session(s)."
+    )
+    print(
+        f"Stable: {totals['stable_claims']}; flip-flopping: "
+        f"{totals['flip_flop_claims']}; "
+        f"avg consensus ratio: {totals['average_consensus_ratio']:.1%}"
+    )
+    shown = claims[: args.max_listed]
+    if shown:
+        print()
+        for claim in shown:
+            mark = "STABLE" if claim["stable"] else "FLIP"
+            ratio = f"{claim['consensus_ratio']:.0%}"
+            tally = f"{claim['verified']}v/{claim['flagged']}f"
+            print(f"{mark} {ratio:>5}  [{tally}]  {claim['claim'][:90]}")
+        if len(claims) > len(shown):
+            print(f"... and {len(claims) - len(shown)} more")
     return 0
 
 
@@ -2890,6 +2966,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         return _cmd_sessions_bundle(args)
     elif args.command == "sessions-cost":
         return _cmd_sessions_cost(args)
+    elif args.command == "sessions-consensus":
+        return _cmd_sessions_consensus(args)
     elif args.command == "sessions-review":
         return _cmd_sessions_review(args)
     elif args.command == "sessions-merge":

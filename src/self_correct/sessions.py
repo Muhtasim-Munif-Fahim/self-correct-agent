@@ -327,6 +327,110 @@ def cost_sessions(
     }
 
 
+def claim_consensus(
+    paths: Iterable[str | Path],
+    *,
+    min_sessions: int = 2,
+) -> Dict[str, Any]:
+    """Score how stably each claim was verified across saved sessions.
+
+    Claims are deduplicated by normalized text, mirroring
+    :func:`merge_sessions`, and tallied across every loaded session: how many
+    times each was verified versus how many times it was flagged. The
+    ``consensus_ratio`` is the share of the majority verdict, so 1.0 means every
+    session agreed and 0.5 means they split evenly. Claims that flipped between
+    verdicts are reported as unstable (``stable: false``) so a reviewer can chase
+    the non-deterministic ones. ``min_sessions`` excludes claims that appear in
+    fewer files than requested, so a single-session claim (ratio 1.0 by
+    definition) cannot inflate the aggregate.
+
+    Files that do not load as sessions are listed under ``invalid`` and skipped,
+    matching every other multi-session subcommand.
+    """
+
+    if isinstance(min_sessions, bool) or not isinstance(min_sessions, int) or min_sessions < 1:
+        raise ValueError("min_sessions must be a positive integer")
+
+    seen: "Dict[str, Dict[str, Any]]" = {}
+    order: List[str] = []
+    invalid: List[Dict[str, str]] = []
+    scanned = 0
+    for path in collect_session_files(paths):
+        try:
+            session = load_session(path)
+        except ValueError as exc:
+            invalid.append({"file": str(path), "error": str(exc)})
+            continue
+        scanned += 1
+        verdicts = [
+            entry
+            for entry in session.get("result", {}).get("verification_log") or []
+            if isinstance(entry, dict)
+            and "is_valid" in entry
+            and entry.get("claim")
+        ]
+        for entry in verdicts:
+            key = _claim_key(entry)
+            is_valid = bool(entry["is_valid"])
+            if key not in seen:
+                seen[key] = {
+                    "claim": str(entry["claim"]).strip(),
+                    "verified": 0,
+                    "flagged": 0,
+                    "sessions": set(),
+                    "verdicts": [],
+                }
+                order.append(key)
+            record = seen[key]
+            record["sessions"].add(str(path))
+            if is_valid:
+                record["verified"] += 1
+            else:
+                record["flagged"] += 1
+            record["verdicts"].append(
+                {"file": str(path), "verdict": "verified" if is_valid else "flagged"}
+            )
+
+    claims: List[Dict[str, Any]] = []
+    for key in order:
+        record = seen[key]
+        total = record["verified"] + record["flagged"]
+        if total < min_sessions:
+            continue
+        ratio = max(record["verified"], record["flagged"]) / total
+        stable = record["verified"] == 0 or record["flagged"] == 0
+        claims.append({
+            "claim": record["claim"],
+            "verified": record["verified"],
+            "flagged": record["flagged"],
+            "total": total,
+            "sessions": sorted(record["sessions"]),
+            "consensus_ratio": round(ratio, 3),
+            "stable": stable,
+            "verdicts": record["verdicts"],
+        })
+    claims.sort(key=lambda item: (item["consensus_ratio"], item["total"]), reverse=True)
+    stable_count = sum(1 for item in claims if item["stable"])
+    flip_flop = sum(1 for item in claims if not item["stable"])
+    avg = (
+        sum(item["consensus_ratio"] for item in claims) / len(claims)
+        if claims
+        else 0.0
+    )
+    return {
+        "scanned": scanned,
+        "invalid": invalid,
+        "min_sessions": min_sessions,
+        "totals": {
+            "unique_claims": len(claims),
+            "stable_claims": stable_count,
+            "flip_flop_claims": flip_flop,
+            "average_consensus_ratio": round(avg, 3),
+        },
+        "claims": claims,
+    }
+
+
 def collect_citations(paths: Iterable[str | Path]) -> Dict[str, Any]:
     """Collect and deduplicate evidence sources cited across saved sessions.
 
