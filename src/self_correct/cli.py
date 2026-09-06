@@ -525,6 +525,22 @@ def _build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true", help="Print the bundle summary as JSON",
     )
 
+    sessions_cost_parser = sub.add_parser(
+        "sessions-cost",
+        help="Estimate the USD cost of saved verification sessions",
+    )
+    sessions_cost_parser.add_argument(
+        "paths", nargs="+", metavar="PATH",
+        help="Session JSON files or directories to scan (directories are scanned for *.json)",
+    )
+    sessions_cost_parser.add_argument(
+        "--json", action="store_true", help="Print the cost summary as JSON",
+    )
+    sessions_cost_parser.add_argument(
+        "--model", default=None, metavar="NAME",
+        help="Price every session with this model (default: each session's recorded model)",
+    )
+
     export_sqlite_parser = sub.add_parser(
         "sessions-export-sqlite",
         help="Export a saved session's verification log to a SQLite database",
@@ -1600,6 +1616,48 @@ def _cmd_sessions_bundle(args: argparse.Namespace) -> int:
             f"Bundled {result['sessions']} session(s) into {result['archive']} "
             f"({kind}, {result['size_bytes']} bytes)"
         )
+    return 0
+
+
+def _cmd_sessions_cost(args: argparse.Namespace) -> int:
+    """Estimate the USD cost of saved sessions."""
+
+    aggregate = sessions.cost_sessions(args.paths, model=getattr(args, "model", None))
+    for bad in aggregate["invalid"]:
+        print(
+            f"sessions-cost: skipped {bad['file']}: {bad['error']}",
+            file=sys.stderr,
+        )
+    if not aggregate["scanned"]:
+        print("No valid session files found.", file=sys.stderr)
+        return 2
+
+    if args.json:
+        print(json.dumps(aggregate, indent=2))
+        return 0
+
+    totals = aggregate["totals"]
+    for row in aggregate["sessions"]:
+        if row["cost_unknown"]:
+            cost_str = "unknown (no published rate)"
+        else:
+            cost_str = f"${row['cost_usd']:.6f}"
+        print(
+            f"{row['file']}: {row['prompt_tokens']} + {row['completion_tokens']} "
+            f"tokens ({row['model']}) -> {cost_str}"
+        )
+    print()
+    note = ""
+    if totals["unknown_model_sessions"]:
+        note = (
+            f" (includes {totals['unknown_model_sessions']} session(s) "
+            "with no published rate; total is a lower bound)"
+        )
+    print(
+        f"Total across {totals['sessions']} session(s): "
+        f"{totals['prompt_tokens']} prompt + {totals['completion_tokens']} completion "
+        f"-> ${totals['cost_usd']:.6f}{note}"
+    )
     return 0
 
 
@@ -2830,6 +2888,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         return _cmd_sessions_citations(args)
     elif args.command == "sessions-bundle":
         return _cmd_sessions_bundle(args)
+    elif args.command == "sessions-cost":
+        return _cmd_sessions_cost(args)
     elif args.command == "sessions-review":
         return _cmd_sessions_review(args)
     elif args.command == "sessions-merge":

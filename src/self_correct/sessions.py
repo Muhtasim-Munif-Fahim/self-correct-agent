@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from . import citations
-from .core import VALID_SEVERITIES, AntiHallucinationResponse, classify_severity
+from .core import VALID_SEVERITIES, AntiHallucinationResponse, classify_severity, model_pricing
 
 SESSION_SCHEMA_VERSION = 1
 
@@ -235,6 +235,96 @@ def aggregate_sessions(paths: Iterable[str | Path]) -> Dict[str, Any]:
         },
     }
     return {"sessions": summaries, "invalid": invalid, "totals": totals}
+
+
+def estimate_session_cost(
+    session: Mapping[str, Any],
+    model: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Estimate the USD cost of one verified session.
+
+    The recorded ``token_usage`` is priced with the published rates from
+    :func:`core.model_pricing`. The model is read from the session config and
+    can be overridden with ``model`` so an explicit pricing tier can be applied
+    to every session in a batch. When the model has no known rate the cost is
+    reported as unknown rather than guessed: quoting another model's rates would
+    mislead a budget holder.
+    """
+
+    config = session.get("config") or {}
+    resolved_model = model or config.get("model")
+    result = session.get("result") or {}
+    usage = result.get("token_usage") or {}
+    prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+    completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+    rates = model_pricing(resolved_model) if resolved_model else None
+    if rates is None:
+        return {
+            "model": resolved_model,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "cost_usd": None,
+            "cost_unknown": True,
+        }
+    prompt_rate, completion_rate = rates
+    cost = (
+        (prompt_tokens / 1_000_000) * prompt_rate
+        + (completion_tokens / 1_000_000) * completion_rate
+    )
+    return {
+        "model": resolved_model,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "cost_usd": round(cost, 6),
+        "cost_unknown": False,
+    }
+
+
+def cost_sessions(
+    paths: Iterable[str | Path],
+    model: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Estimate USD cost across many saved session files.
+
+    Each session is priced individually with :func:`estimate_session_cost`;
+    the aggregate totals the token usage and the knowable cost, while sessions
+    whose model has no published rate still contribute to the token totals but
+    add nothing to ``cost_usd`` and are counted under
+    ``unknown_model_sessions`` so the total reads as a lower bound. Files that
+    do not load as sessions are reported under ``invalid`` and skipped.
+    """
+
+    rows: List[Dict[str, Any]] = []
+    invalid: List[Dict[str, str]] = []
+    scanned = 0
+    for path in collect_session_files(paths):
+        try:
+            session = load_session(path)
+        except ValueError as exc:
+            invalid.append({"file": str(path), "error": str(exc)})
+            continue
+        scanned += 1
+        estimate = estimate_session_cost(session, model=model)
+        estimate["file"] = str(path)
+        rows.append(estimate)
+
+    prompt_tokens = sum(row["prompt_tokens"] for row in rows)
+    completion_tokens = sum(row["completion_tokens"] for row in rows)
+    known_cost = sum(row["cost_usd"] for row in rows if row["cost_usd"] is not None)
+    unknown_models = sum(1 for row in rows if row["cost_unknown"])
+    return {
+        "sessions": rows,
+        "scanned": scanned,
+        "invalid": invalid,
+        "totals": {
+            "sessions": scanned,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+            "cost_usd": round(known_cost, 6),
+            "unknown_model_sessions": unknown_models,
+        },
+    }
 
 
 def collect_citations(paths: Iterable[str | Path]) -> Dict[str, Any]:
