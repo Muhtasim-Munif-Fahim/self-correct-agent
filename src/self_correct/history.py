@@ -211,3 +211,137 @@ def _label_counts(runs: List[Dict[str, Any]]) -> Dict[str, int]:
         for tag in tags:
             counts[tag] = counts.get(tag, 0) + 1
     return dict(sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
+
+
+#: Bucket widths accepted by :func:`trend_buckets`, in seconds.
+_BUCKET_SECONDS = {"hour": 3600, "day": 86400, "week": 604800}
+
+#: Metrics where a rising value is a regression rather than an improvement.
+LOWER_IS_BETTER = frozenset({"mean_duration", "errors"})
+
+
+def trend_buckets(
+    runs: List[Dict[str, Any]],
+    *,
+    bucket: str = "day",
+    min_runs: int = 1,
+) -> List[Dict[str, Any]]:
+    """Group runs into fixed time buckets and summarise each one.
+
+    ``aggregate`` collapses the whole history into a single verified rate,
+    which hides the thing that actually matters over time: whether
+    verification quality is drifting. Bucketing keeps the same statistics but
+    leaves the time axis intact.
+
+    Buckets are aligned to the epoch rather than to the first run, so the same
+    run always lands in the same bucket no matter which slice of history it is
+    computed over. Empty spans between runs produce no bucket. Results are
+    ordered oldest first.
+
+    Parameters
+    ----------
+    bucket:
+        One of ``hour``, ``day`` or ``week``.
+    min_runs:
+        Drop buckets holding fewer than this many runs, which keeps a single
+        stray run from reading as a trend. Must be a positive integer.
+    """
+
+    if bucket not in _BUCKET_SECONDS:
+        raise ValueError(f"bucket must be one of {', '.join(sorted(_BUCKET_SECONDS))}")
+    if not isinstance(min_runs, int) or isinstance(min_runs, bool) or min_runs <= 0:
+        raise ValueError("min_runs must be a positive integer")
+
+    width = _BUCKET_SECONDS[bucket]
+    grouped: Dict[int, List[Dict[str, Any]]] = {}
+    for run in runs:
+        try:
+            stamp = float(run.get("timestamp", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        grouped.setdefault(int(stamp // width) * width, []).append(run)
+
+    out: List[Dict[str, Any]] = []
+    for start in sorted(grouped):
+        members = grouped[start]
+        if len(members) < min_runs:
+            continue
+        summary = aggregate(members)
+        out.append(
+            {
+                "bucket_start": start,
+                "bucket": time.strftime("%Y-%m-%dT%H:%M", time.gmtime(start)),
+                "runs": summary["runs"],
+                "errors": summary["errors"],
+                "claims": summary["claims"],
+                "claims_verified": summary["claims_verified"],
+                "verified_rate": summary["verified_rate"],
+                "mean_duration": summary["mean_duration"],
+                "prompt_tokens": summary["prompt_tokens"],
+                "completion_tokens": summary["completion_tokens"],
+            }
+        )
+    return out
+
+
+def trend_direction(
+    buckets: List[Dict[str, Any]],
+    *,
+    metric: str = "verified_rate",
+    tolerance: float = 0.05,
+) -> Dict[str, Any]:
+    """Compare the first and second half of ``buckets`` on one metric.
+
+    Splits the buckets down the middle, averages ``metric`` over each half and
+    reports the change. The verdict is ``improving``, ``declining`` or
+    ``stable``; ``tolerance`` is the absolute change below which the two halves
+    count as the same, so ordinary noise does not read as a regression.
+
+    The verdict follows the metric's own direction, not the sign of the
+    change: a rising ``verified_rate`` is an improvement, but a rising
+    ``mean_duration`` or ``errors`` is a regression. ``LOWER_IS_BETTER`` lists
+    the metrics that invert. ``change`` is always reported as the raw
+    difference so callers can still see which way the number moved.
+
+    With an odd number of buckets the middle one is left out of both halves
+    rather than biasing one side. Fewer than two buckets cannot support a
+    comparison and return the ``insufficient-data`` verdict.
+    """
+
+    if not isinstance(tolerance, (int, float)) or isinstance(tolerance, bool) or tolerance < 0:
+        raise ValueError("tolerance must be a non-negative number")
+
+    values = [float(b[metric]) for b in buckets if metric in b]
+    if len(values) < 2:
+        return {
+            "verdict": "insufficient-data",
+            "metric": metric,
+            "buckets": len(values),
+            "change": 0.0,
+        }
+
+    half = len(values) // 2
+    earlier = values[:half]
+    later = values[-half:]
+    first = sum(earlier) / len(earlier)
+    second = sum(later) / len(later)
+    change = second - first
+
+    # A rising duration or error count is a regression, so the sign of the
+    # change alone cannot decide the verdict.
+    better = -change if metric in LOWER_IS_BETTER else change
+    if abs(change) <= float(tolerance):
+        verdict = "stable"
+    elif better > 0:
+        verdict = "improving"
+    else:
+        verdict = "declining"
+
+    return {
+        "verdict": verdict,
+        "metric": metric,
+        "buckets": len(values),
+        "first_half": first,
+        "second_half": second,
+        "change": change,
+    }

@@ -311,6 +311,38 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Only include runs recorded with this exact model name.",
     )
 
+    trend_parser = sub.add_parser(
+        "trend", help="Show verification statistics over time and flag drift"
+    )
+    trend_parser.add_argument(
+        "--bucket", choices=["hour", "day", "week"], default="day",
+        help="Time bucket width (default: day)",
+    )
+    trend_parser.add_argument(
+        "--metric", default="verified_rate",
+        choices=["verified_rate", "mean_duration", "claims", "runs", "errors"],
+        help="Metric compared across halves of the history (default: verified_rate)",
+    )
+    trend_parser.add_argument(
+        "--min-runs", type=int, default=1,
+        help="Ignore buckets with fewer than this many runs (default: 1)",
+    )
+    trend_parser.add_argument(
+        "--tolerance", type=float, default=0.05,
+        help="Absolute change below which the trend counts as stable (default: 0.05)",
+    )
+    trend_parser.add_argument(
+        "--label", action="append", default=None, metavar="TAG",
+        help="Only include runs tagged with TAG; repeat or comma-separate for AND-of-tags.",
+    )
+    trend_parser.add_argument(
+        "--model", default=None,
+        help="Only include runs recorded with this exact model name.",
+    )
+    trend_parser.add_argument(
+        "--json", action="store_true", help="Print the trend as JSON",
+    )
+
     cache_parser = sub.add_parser("cache", help="Show claim-cache configuration and effectiveness")
     cache_parser.add_argument(
         "--json", action="store_true", help="Print the summary as JSON",
@@ -2261,6 +2293,55 @@ def _cmd_stats(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_trend(args: argparse.Namespace) -> int:
+    """Show verification statistics bucketed over time."""
+    if args.min_runs <= 0:
+        print("--min-runs must be a positive integer")
+        return 1
+    if args.tolerance < 0:
+        print("--tolerance must be a non-negative number")
+        return 1
+
+    runs = history.filter_runs(
+        history.load_runs(),
+        label=getattr(args, "label", None),
+        model=getattr(args, "model", None),
+    )
+    buckets = history.trend_buckets(runs, bucket=args.bucket, min_runs=args.min_runs)
+    direction = history.trend_direction(
+        buckets, metric=args.metric, tolerance=args.tolerance
+    )
+
+    if args.json:
+        print(json.dumps({"buckets": buckets, "trend": direction}, indent=2, default=str))
+        return 0
+
+    if not buckets:
+        print("No runs recorded yet.")
+        return 0
+
+    print(f"{'Bucket':<20}{'Runs':>6}{'Claims':>8}{'Verified':>10}{'Mean s':>9}")
+    print("-" * 53)
+    for entry in buckets:
+        print(
+            f"{entry['bucket']:<20}"
+            f"{entry['runs']:>6}"
+            f"{entry['claims']:>8}"
+            f"{entry['verified_rate']:>9.1%}"
+            f"{entry['mean_duration']:>9.1f}"
+        )
+    print("-" * 53)
+
+    if direction["verdict"] == "insufficient-data":
+        print(f"Need at least 2 buckets to judge a trend (have {direction['buckets']}).")
+    else:
+        print(
+            f"{args.metric}: {direction['first_half']:.3f} -> {direction['second_half']:.3f} "
+            f"({direction['change']:+.3f}) — {direction['verdict']}"
+        )
+    return 0
+
+
 def _cmd_cache(args: argparse.Namespace) -> int:
     """Report claim-cache effectiveness across recorded runs."""
     summary = history.aggregate(history.load_runs())
@@ -3041,6 +3122,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         return _cmd_stats(args)
     elif args.command == "cache":
         return _cmd_cache(args)
+    elif args.command == "trend":
+        return _cmd_trend(args)
     elif args.command == "info":
         cmd_info()
     elif args.command == "estimate":
