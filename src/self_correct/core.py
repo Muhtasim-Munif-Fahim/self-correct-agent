@@ -992,6 +992,66 @@ def load_content_checks(path: str | Path) -> List[ContentCheck]:
 # LRU Claim Cache
 # ------------------------------------------------------------------
 
+#: Patterns marking a claim as checkable-and-likely-wrong. Weights are
+#: relative only: they order claims, they are not probabilities.
+_RISK_PATTERNS: Tuple[Tuple[str, "re.Pattern[str]", float], ...] = (
+    # A bare number is the single most common thing an LLM gets wrong.
+    ("number", re.compile(r"\b\d[\d,]*(?:\.\d+)?\b"), 2.0),
+    ("percentage", re.compile(r"\b\d+(?:\.\d+)?\s?%"), 1.5),
+    ("year", re.compile(r"\b(?:1[6-9]|20)\d{2}\b"), 1.5),
+    ("date", re.compile(
+        r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2}\b",
+        re.IGNORECASE,
+    ), 1.5),
+    ("money", re.compile(r"[$£€]\s?\d"), 1.5),
+    # Superlatives and absolutes are rarely defensible as stated.
+    ("superlative", re.compile(
+        r"\b(?:first|only|largest|smallest|best|worst|fastest|slowest|most|least|never|always|all|none)\b",
+        re.IGNORECASE,
+    ), 1.0),
+    ("citation", re.compile(r"\b(?:according to|per|cited in|reported by|source:)\b", re.IGNORECASE), 1.0),
+    ("proper_noun", re.compile(r"(?<!^)(?<![.!?]\s)\b[A-Z][a-z]{2,}\b"), 0.5),
+)
+
+
+def claim_risk_score(claim: str) -> float:
+    """Score how likely a claim is to be wrong, and worth spending a call on.
+
+    Claims carrying specific, checkable detail — numbers, percentages, years,
+    dates, money, named entities — are the ones a model fabricates, and are
+    also the ones a verifier can actually settle. Vague claims score low
+    because a verification call spent on them buys little.
+
+    Each pattern contributes its weight once, no matter how many times it
+    matches, so a claim listing six numbers does not outrank a claim carrying a
+    number, a year and a citation. The score is unbounded above but in practice
+    lands between 0.0 and about 9.0; only the ordering is meaningful.
+    """
+
+    if not isinstance(claim, str):
+        raise ValueError("claim must be a string")
+
+    score = 0.0
+    for _name, pattern, weight in _RISK_PATTERNS:
+        if pattern.search(claim):
+            score += weight
+    return score
+
+
+def prioritize_claims(claims: Sequence[str]) -> List[str]:
+    """Order claims most-checkable-first, keeping ties in their original order.
+
+    Used when an LLM call budget may run out mid-run: verifying the risky
+    claims first means the budget is spent where it can catch something, rather
+    than on whichever claims happened to be extracted last.
+
+    The sort is stable, so claims of equal risk keep the order the extractor
+    produced them in.
+    """
+
+    return sorted(claims, key=lambda claim: -claim_risk_score(claim))
+
+
 class _ClaimCache:
     """Thread-safe LRU cache for verified claims."""
 
@@ -1189,6 +1249,7 @@ class AntiHallucinator:
         retry_backoff: float = 0.0,
         max_evidence_results: int = 3,
         max_llm_calls: Optional[int] = None,
+        prioritize_claims_by_risk: bool = True,
         content_checks: Optional[List[ContentCheck]] = None,
         model_draft: Optional[str] = None,
         model_extract: Optional[str] = None,
@@ -1251,6 +1312,7 @@ class AntiHallucinator:
         self.retry_backoff = retry_backoff
         self.max_evidence_results = max_evidence_results
         self.max_llm_calls = max_llm_calls
+        self.prioritize_claims_by_risk = prioritize_claims_by_risk
         self.content_checks: List[ContentCheck] = list(content_checks or [])
         self._model_draft = model_draft
         self._model_extract = model_extract
@@ -1693,15 +1755,26 @@ class AntiHallucinator:
 
         phase_started = time.monotonic()
         verify_before = _snapshot_tokens(usage)
-        for claim in claims:
+        # With a budget in play the loop may stop early, so the order decides
+        # which claims go unverified. Spend the calls on the checkable ones
+        # first. Without a budget every claim is verified either way, and
+        # reordering would only churn the log.
+        # Index-based so a claim repeated in the draft still gets its own slot.
+        verify_order = list(range(len(claims)))
+        if budget is not None and self.prioritize_claims_by_risk:
+            verify_order.sort(key=lambda index: -claim_risk_score(claims[index]))
+
+        results_by_index: Dict[int, Dict[str, Any]] = {}
+        for index in verify_order:
+            claim = claims[index]
             if budget is not None and not budget.try_acquire():
-                verification_log.append({
+                results_by_index[index] = {
                     "claim": claim,
                     "skipped_by_budget": True,
                     "critique": "not verified: LLM call budget reached",
-                })
+                }
                 continue
-            result = self._verify_single_claim(
+            results_by_index[index] = self._verify_single_claim(
                 claim,
                 model_verify,
                 critique_prompt,
@@ -1710,8 +1783,15 @@ class AntiHallucinator:
                 max_tokens=max_tokens,
                 cache_scope=cache_scope,
             )
+
+        # Report in extraction order regardless of the order verified, so the
+        # log still reads alongside the draft.
+        for index, claim in enumerate(claims):
+            result = results_by_index.get(index)
+            if result is None:
+                continue
             verification_log.append(result)
-            if not result["is_valid"]:
+            if not result.get("skipped_by_budget") and not result["is_valid"]:
                 hallucinations_caught.append(
                     f"Claim '{claim}' flagged: {result['critique']}"
                 )
