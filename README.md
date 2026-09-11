@@ -257,7 +257,7 @@ The CI workflow also runs the demo script so the repository keeps a working exam
 - [x] ~~Add richer reporting formats for verification results.~~ ? v0.2.0
 - [ ] Publish additional examples for research and policy writing use cases.
 - [ ] Structured output extraction via OpenAI function calling.
-- [ ] Hallucination density scoring.
+- [ ] Hallucination density scoring...
 
 ## Release Notes
 
