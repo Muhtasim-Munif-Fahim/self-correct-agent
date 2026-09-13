@@ -237,7 +237,11 @@ def test_unsupported_session_schema_exits_with_status_two(tmp_path, capsys) -> N
 def test_resume_reruns_saved_prompt_through_mocked_pipeline(
     tmp_path, monkeypatch, capsys
 ) -> None:
-    path = _write_session(tmp_path, prompt="Explain transformers.")
+    path = _write_session(
+        tmp_path,
+        prompt="Explain transformers.",
+        config={"model": "saved-model", "strictness": 0.7, "tools": ["wikipedia"]},
+    )
     _install_fake_pipeline(monkeypatch, tmp_path)
     report = tmp_path / "report.json"
 
