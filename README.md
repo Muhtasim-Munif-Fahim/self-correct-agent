@@ -46,7 +46,7 @@ This package turns that failure mode into a repeatable maintenance step:
 - Token usage tracking and simple cost estimation.
 - Custom prompts for draft, extraction, critique, and correction stages.
 - Rich report exports: `to_dict()`, `to_json()`, `to_markdown()`.
-- Command-line interface with `verify`, `batch`, and `info` subcommands.
+- Command-line interface with `verify`, `resume`, `batch`, and `info` subcommands.
 
 ## Installation
 
@@ -174,6 +174,10 @@ self-correct verify --model gpt-4o-mini --prompt "..." --tools duckduckgo wikipe
 # Markdown report with full verification log
 self-correct verify --model gpt-4o-mini --file input.txt --output-format markdown --include-log
 
+# Save a run, then re-run the same prompt with the saved settings
+self-correct verify --model gpt-4o-mini --prompt "Explain transformers." --save-session session.json
+self-correct resume session.json
+
 # Batch process multiple prompts (JSONL format)
 echo '{"id": "1", "prompt": "Explain transformers"}
 {"id": "2", "prompt": "What is RLHF?"}' > prompts.jsonl
@@ -186,6 +190,28 @@ self-correct config validate --config self-correct.json
 # Show package info
 self-correct info
 ```
+
+### Save and resume a verification
+
+`verify --save-session PATH` writes the prompt, settings, and result to a JSON file. `resume` loads that file and re-runs the saved prompt with the saved settings. This is a fresh verification of the same prompt, not a mid-pipeline pause that continues after draft or extract.
+
+```bash
+# Save the prompt, settings, and result
+self-correct verify --model gpt-4o-mini --prompt "Explain transformers." --save-session session.json
+
+# Re-run the saved prompt with the saved settings
+self-correct resume session.json
+
+# Override selected settings for the new run
+self-correct resume session.json --model gpt-4o --strictness 0.8 --output report.json
+
+# Persist the new run as its own session
+self-correct resume session.json --save-session session-retry.json
+```
+
+CLI flags on `resume` replace the matching saved values. The current overrides are `--model`, `--model-draft`, `--model-extract`, `--model-verify`, `--model-correct`, `--strictness`, `--provider`, `--base-url`, `--api-key-env`, `--max-retries`, `--retry-backoff`, `--max-calls`, `--checks`, `--output`, `--output-format`, `--include-log`, `--save-session`, and `--fail-on-hallucination`. Everything else comes from the session file.
+
+Batch `--resume-from` is a different feature: it skips already-completed items in a batch file. Use `resume` for a single saved session.
 
 ### Batch JSONL format
 

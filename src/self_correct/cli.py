@@ -1333,6 +1333,7 @@ def _cmd_resume(args: argparse.Namespace) -> int | None:
         include_log=args.include_log,
         no_cache=bool(config.get("no_cache", False)),
         cache_ttl=config.get("cache_ttl"),
+        cache_file=config.get("cache_file"),
         max_tokens=config.get("max_tokens"),
         max_retries=(
             args.max_retries
