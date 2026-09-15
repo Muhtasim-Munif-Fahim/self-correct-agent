@@ -1052,6 +1052,30 @@ def prioritize_claims(claims: Sequence[str]) -> List[str]:
     return sorted(claims, key=lambda claim: -claim_risk_score(claim))
 
 
+def claim_risk_summary(claims: Sequence[str], high_risk: float = 3.0) -> Dict[str, Any]:
+    """Summarize verification demand before spending a call budget.
+
+    The result exposes the exact claims that should be protected when a run
+    cannot afford to verify every extracted statement.  Scores use the same
+    stable heuristic as :func:`prioritize_claims`; callers can lower or raise
+    ``high_risk`` to match their available verification budget.
+    """
+    if not isinstance(high_risk, (int, float)) or isinstance(high_risk, bool):
+        raise ValueError("high_risk must be a number")
+    scored = [
+        {"claim": claim, "risk_score": claim_risk_score(claim)} for claim in claims
+    ]
+    scored.sort(key=lambda item: -float(item["risk_score"]))
+    scores = [float(item["risk_score"]) for item in scored]
+    return {
+        "count": len(scored),
+        "high_risk_threshold": float(high_risk),
+        "high_risk_count": sum(score >= high_risk for score in scores),
+        "mean_risk": (sum(scores) / len(scores)) if scores else 0.0,
+        "claims": scored,
+    }
+
+
 class _ClaimCache:
     """Thread-safe LRU cache for verified claims."""
 
