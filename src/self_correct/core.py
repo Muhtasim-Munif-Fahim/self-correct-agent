@@ -1038,6 +1038,18 @@ def claim_risk_score(claim: str) -> float:
     return score
 
 
+def explain_claim_risk(claim: str) -> Dict[str, Any]:
+    """Return the checkable signals responsible for a claim's risk score."""
+    if not isinstance(claim, str):
+        raise ValueError("claim must be a string")
+    signals = [
+        {"signal": name, "weight": weight}
+        for name, pattern, weight in _RISK_PATTERNS
+        if pattern.search(claim)
+    ]
+    return {"claim": claim, "risk_score": sum(item["weight"] for item in signals), "signals": signals}
+
+
 def prioritize_claims(claims: Sequence[str]) -> List[str]:
     """Order claims most-checkable-first, keeping ties in their original order.
 
