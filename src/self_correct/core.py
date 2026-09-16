@@ -29,6 +29,17 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from .structured import (
+    append_json_instruction,
+    completion_text,
+    is_unsupported_structured_error,
+    normalize_structured_mode,
+    parse_claim_verdict,
+    parse_extracted_claims,
+    payload_from_response,
+    request_kwargs,
+)
+
 logger = logging.getLogger(__name__)
 
 #: Published USD rates per 1,000,000 tokens, as (prompt, completion).
@@ -498,6 +509,18 @@ class AntiHallucinationResponse:
                 data.get("token_usage_by_phase")
             ),
         )
+
+    def to_structured(self) -> "StructuredVerificationResult":
+        """Return a typed, schema-validated view of this verification result.
+
+        The object exposes claim verdicts as :class:`StructuredClaim` records
+        and can be dumped with ``to_dict()`` / ``to_json()`` or validated as a
+        Pydantic model via ``to_pydantic()``.
+        """
+
+        from .structured import StructuredVerificationResult
+
+        return StructuredVerificationResult.from_response(self)
 
     def to_json(self, indent: int = 2, ensure_ascii: bool = False) -> str:
         """
@@ -1327,6 +1350,7 @@ class AntiHallucinator:
         model_extract: Optional[str] = None,
         model_verify: Optional[str] = None,
         model_correct: Optional[str] = None,
+        structured_output: Any = False,
     ) -> None:
         """
         Initialize the AntiHallucinator wrapper.
@@ -1357,6 +1381,11 @@ class AntiHallucinator:
             Model for claim verification phase (falls back to generate() model arg).
         model_correct : Optional[str]
             Model for correction phase (falls back to generate() model arg).
+        structured_output : bool or str
+            When True or ``"json"``, extraction and critique use OpenAI JSON
+            mode (``response_format={"type": "json_object"}``). Pass
+            ``"function"`` to use tool/function calling instead. ``False``
+            keeps the default free-text parsers.
         """
         if isinstance(max_retries, bool) or max_retries < 0:
             raise ValueError("max_retries must be a non-negative integer")
@@ -1390,6 +1419,12 @@ class AntiHallucinator:
         self._model_extract = model_extract
         self._model_verify = model_verify
         self._model_correct = model_correct
+        self._structured_mode = normalize_structured_mode(structured_output)
+
+    @property
+    def structured_output(self) -> Optional[str]:
+        """Active structured-output mode (``json``, ``function``) or ``None``."""
+        return self._structured_mode
 
     @property
     def cache(self) -> _ClaimCache:
@@ -1437,6 +1472,88 @@ class AntiHallucinator:
     # Private helpers
     # ------------------------------------------------------------------
 
+    def _create_completion(
+        self,
+        model: str,
+        system_prompt: str,
+        user_prompt: str,
+        usage: Optional[TokenUsage] = None,
+        max_tokens: int | None = None,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        """Call ``chat.completions.create`` with retries; return the raw response.
+
+        When ``extra`` structured-output kwargs are rejected by the client,
+        the request is retried once as plain chat so OpenAI-compatible
+        proxies that lack JSON mode still complete the run.
+        """
+
+        kwargs: Dict[str, Any] = dict(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.2,
+        )
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
+        extra = dict(extra or {})
+        if extra:
+            kwargs.update(extra)
+
+        def _do_create(request: Dict[str, Any]) -> Any:
+            last_exc: Optional[BaseException] = None
+            for attempt in range(self.max_retries + 1):
+                try:
+                    return self.client.chat.completions.create(**request)
+                except AttributeError:
+                    raise
+                except Exception as exc:
+                    last_exc = exc
+                    if extra and is_unsupported_structured_error(exc):
+                        raise
+                    if attempt >= self.max_retries:
+                        raise
+                    delay = self.retry_backoff * (2**attempt)
+                    if delay:
+                        time.sleep(delay)
+            raise RuntimeError(f"LLM API call failed: {last_exc}")
+
+        try:
+            try:
+                response = _do_create(kwargs)
+            except AttributeError:
+                raise
+            except Exception as exc:
+                if extra and is_unsupported_structured_error(exc):
+                    logger.warning(
+                        "Client rejected structured output (%s); retrying as plain text.",
+                        exc,
+                    )
+                    plain = {key: value for key, value in kwargs.items() if key not in extra}
+                    response = _do_create(plain)
+                else:
+                    raise
+        except AttributeError:
+            raise ValueError(
+                "Client does not have an OpenAI-compatible "
+                "`.chat.completions.create()` interface."
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"LLM API call failed: {type(exc).__name__}: {exc}"
+            ) from exc
+
+        if usage is not None:
+            resp_usage = getattr(response, "usage", None)
+            if resp_usage is not None:
+                usage.add(
+                    prompt_tokens=getattr(resp_usage, "prompt_tokens", 0) or 0,
+                    completion_tokens=getattr(resp_usage, "completion_tokens", 0) or 0,
+                )
+        return response
+
     def _call_llm(
         self, model: str, system_prompt: str, user_prompt: str,
         usage: Optional[TokenUsage] = None,
@@ -1455,52 +1572,54 @@ class AntiHallucinator:
         str
             The model's text response. Guaranteed non-None.
         """
+        response = self._create_completion(
+            model, system_prompt, user_prompt, usage, max_tokens=max_tokens
+        )
         try:
-            kwargs = dict(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=0.2,
-            )
-            if max_tokens is not None:
-                kwargs["max_tokens"] = max_tokens
-            for attempt in range(self.max_retries + 1):
-                try:
-                    response = self.client.chat.completions.create(**kwargs)
-                    break
-                except AttributeError:
-                    raise
-                except Exception:
-                    if attempt >= self.max_retries:
-                        raise
-                    delay = self.retry_backoff * (2**attempt)
-                    if delay:
-                        time.sleep(delay)
-            # Accumulate token usage if the response provides it
-            if usage is not None:
-                resp_usage = getattr(response, "usage", None)
-                if resp_usage is not None:
-                    usage.add(
-                        prompt_tokens=getattr(resp_usage, "prompt_tokens", 0),
-                        completion_tokens=getattr(resp_usage, "completion_tokens", 0),
-                    )
-
             content = response.choices[0].message.content
-            if content is None:
-                logger.warning("LLM returned None content.")
-                return ""
-            return content
-        except AttributeError:
+        except (AttributeError, IndexError, TypeError):
             raise ValueError(
                 "Client does not have an OpenAI-compatible "
                 "`.chat.completions.create()` interface."
             )
-        except Exception as exc:
-            raise RuntimeError(
-                f"LLM API call failed: {type(exc).__name__}: {exc}"
-            ) from exc
+        if content is None:
+            logger.warning("LLM returned None content.")
+            return ""
+        return content
+
+    def _extract_claims(
+        self,
+        model: str,
+        draft: str,
+        usage: TokenUsage,
+        max_tokens: int | None = None,
+    ) -> Tuple[List[str], str]:
+        """Extract claims from ``draft``, using JSON mode when configured.
+
+        Returns ``(claims, raw_model_text)``. Invalid structured payloads
+        fall back to the numbered-list parser so a non-JSON model still
+        yields claims.
+        """
+
+        user_prompt = f"Text to analyze:\n\n{draft}"
+        system_prompt = self._extraction_prompt
+        if self._structured_mode is None:
+            raw = self._call_llm(
+                model, system_prompt, user_prompt, usage, max_tokens=max_tokens
+            )
+            return self._parse_claims(raw), raw
+
+        system_prompt = append_json_instruction(system_prompt, "extract")
+        extra = request_kwargs(self._structured_mode, "extract")
+        response = self._create_completion(
+            model, system_prompt, user_prompt, usage, max_tokens=max_tokens, extra=extra
+        )
+        raw = completion_text(response)
+        payload = payload_from_response(response)
+        claims = parse_extracted_claims(payload) if payload is not None else None
+        if claims is not None:
+            return claims, raw or json.dumps(payload)
+        return self._parse_claims(raw), raw
 
     def _parse_claims(self, claims_text: str) -> List[str]:
         """Parse a numbered/bulleted list of claims from LLM output."""
@@ -1546,16 +1665,15 @@ class AntiHallucinator:
         tool_names = sorted(
             str(getattr(tool, "name", type(tool).__name__)) for tool in self.tools
         )
-        return json.dumps(
-            {
-                "model": model,
-                "critique_prompt": critique_prompt,
-                "strictness": self.strictness,
-                "tools": tool_names if use_tools else [],
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        )
+        payload: Dict[str, Any] = {
+            "model": model,
+            "critique_prompt": critique_prompt,
+            "strictness": self.strictness,
+            "tools": tool_names if use_tools else [],
+        }
+        if self._structured_mode:
+            payload["structured_output"] = self._structured_mode
+        return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
     def _search_evidence(
         self, claim: str, max_results: int = 3
@@ -1625,15 +1743,38 @@ class AntiHallucinator:
                 f"{evidence_context}"
             )
 
-        critique = self._call_llm(
-            model=model,
-            system_prompt=critique_prompt,
-            user_prompt=user_msg,
-            usage=usage,
-            max_tokens=max_tokens,
-        )
+        structured_used = False
+        if self._structured_mode is None:
+            critique = self._call_llm(
+                model=model,
+                system_prompt=critique_prompt,
+                user_prompt=user_msg,
+                usage=usage,
+                max_tokens=max_tokens,
+            )
+            is_valid = "VERIFIED: True" in critique
+        else:
+            system_prompt = append_json_instruction(critique_prompt, "verify")
+            extra = request_kwargs(self._structured_mode, "verify")
+            response = self._create_completion(
+                model,
+                system_prompt,
+                user_msg,
+                usage,
+                max_tokens=max_tokens,
+                extra=extra,
+            )
+            critique = completion_text(response)
+            payload = payload_from_response(response)
+            verdict = parse_claim_verdict(payload) if payload is not None else None
+            if verdict is not None:
+                is_valid = verdict["is_valid"]
+                if verdict["critique"]:
+                    critique = verdict["critique"]
+                structured_used = True
+            else:
+                is_valid = "VERIFIED: True" in critique
 
-        is_valid = "VERIFIED: True" in critique
         result = {
             "claim": claim,
             "is_valid": is_valid,
@@ -1641,6 +1782,7 @@ class AntiHallucinator:
             "evidence_used": bool(evidence_context),
             "evidence_sources": evidence_sources,
             "cached": False,
+            "structured": structured_used,
         }
 
         # Store in cache
@@ -1652,6 +1794,7 @@ class AntiHallucinator:
                 "critique": critique,
                 "evidence_used": bool(evidence_context),
                 "evidence_sources": evidence_sources,
+                "structured": structured_used,
             },
             scope=cache_scope,
         )
@@ -1738,6 +1881,33 @@ class AntiHallucinator:
             self._apply_content_checks(response)
         return response
 
+    def generate_structured(
+        self,
+        model: str,
+        prompt: str,
+        max_tokens: int | None = None,
+        model_draft: Optional[str] = None,
+        model_extract: Optional[str] = None,
+        model_verify: Optional[str] = None,
+        model_correct: Optional[str] = None,
+    ) -> "StructuredVerificationResult":
+        """Generate a verified response and return it as a typed result.
+
+        Same pipeline as :meth:`generate`. Use ``structured_output`` on the
+        constructor to have extraction and critique call JSON mode or
+        function calling; the return value is typed either way.
+        """
+
+        return self.generate(
+            model=model,
+            prompt=prompt,
+            max_tokens=max_tokens,
+            model_draft=model_draft,
+            model_extract=model_extract,
+            model_verify=model_verify,
+            model_correct=model_correct,
+        ).to_structured()
+
     def _generate_sync(
         self, model: str, prompt: str, max_tokens: int | None = None,
         model_draft: Optional[str] = None, model_extract: Optional[str] = None,
@@ -1790,17 +1960,11 @@ class AntiHallucinator:
             )
         phase_started = time.monotonic()
         extract_before = _snapshot_tokens(usage)
-        claims_text = self._call_llm(
-            model=model_extract,
-            system_prompt=self._extraction_prompt,
-            user_prompt=f"Text to analyze:\n\n{draft}",
-            usage=usage,
-            max_tokens=max_tokens,
+        claims, claims_text = self._extract_claims(
+            model_extract, draft, usage, max_tokens=max_tokens
         )
         _record_phase_tokens(phase_tokens, "extraction", extract_before, usage)
         phase_timings["extraction"] = time.monotonic() - phase_started
-
-        claims = self._parse_claims(claims_text)
 
         if not claims:
             logger.warning("No claims extracted. Returning draft with warning.")
@@ -2036,6 +2200,30 @@ class AntiHallucinator:
             self._apply_content_checks(response)
         return response
 
+    async def generate_structured_async(
+        self,
+        model: str,
+        prompt: str,
+        *,
+        max_concurrency: int | None = None,
+        model_draft: Optional[str] = None,
+        model_extract: Optional[str] = None,
+        model_verify: Optional[str] = None,
+        model_correct: Optional[str] = None,
+    ) -> "StructuredVerificationResult":
+        """Async :meth:`generate_structured` with parallel claim verification."""
+
+        response = await self.generate_async(
+            model,
+            prompt,
+            max_concurrency=max_concurrency,
+            model_draft=model_draft,
+            model_extract=model_extract,
+            model_verify=model_verify,
+            model_correct=model_correct,
+        )
+        return response.to_structured()
+
     async def _generate_async_impl(
         self, model: str, prompt: str, *, max_concurrency: int | None = None,
         model_draft: Optional[str] = None, model_extract: Optional[str] = None,
@@ -2089,17 +2277,14 @@ class AntiHallucinator:
 
         phase_started = time.monotonic()
         extract_before = _snapshot_tokens(usage)
-        claims_text = await asyncio.to_thread(
-            self._call_llm,
+        claims, claims_text = await asyncio.to_thread(
+            self._extract_claims,
             model_extract,
-            self._extraction_prompt,
-            f"Text to analyze:\n\n{draft}",
+            draft,
             usage,
         )
         _record_phase_tokens(phase_tokens, "extraction", extract_before, usage)
         phase_timings["extraction"] = time.monotonic() - phase_started
-
-        claims = self._parse_claims(claims_text)
 
         if not claims:
             return AntiHallucinationResponse(
