@@ -50,6 +50,7 @@ def main() -> None:
     print()
     print("== Summary ==")
     print(f"claims flagged: {len(result.hallucinations_caught)}")
+    print(f"hallucination density: {result.format_hallucination_density()}")
     print(f"prompt tokens: {result.token_usage.prompt_tokens}")
     print(f"completion tokens: {result.token_usage.completion_tokens}")
     print(f"total tokens: {result.token_usage.total_tokens}")

@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any, Mapping
 
+from .core import AntiHallucinationResponse
+
 
 def render_session_review(
     session: Mapping[str, Any],
@@ -16,7 +18,8 @@ def render_session_review(
     The review covers:
       - the session's prompt (truncated to 200 characters) and model config
       - the headline counts (total claims, verified, flagged, hallucination
-        rate, critiques-with-content, claims-with-step, status)
+        rate, hallucination density, critiques-with-content, claims-with-step,
+        status)
       - the top flagged claims by critique length (the longest critiques
         usually contain the most actionable feedback)
       - the distinct checks observed across the verification log
@@ -35,6 +38,9 @@ def render_session_review(
     verified_count = len(verified)
     total = flagged_count + verified_count
     hallucination_rate = (flagged_count / total) if total else 0.0
+    density = AntiHallucinationResponse.from_dict(
+        result if isinstance(result, dict) else {}
+    ).hallucination_density_report()
     critiques_with_content = sum(
         1 for entry in log
         if isinstance(entry, dict) and str(entry.get("critique") or "").strip()
@@ -70,6 +76,10 @@ def render_session_review(
     lines.append(f"| Verified | {verified_count} |")
     lines.append(f"| Flagged | {flagged_count} |")
     lines.append(f"| Hallucination rate | {hallucination_rate:.2%} |")
+    lines.append(
+        f"| Hallucination density | {density['claim_rate']:.2%} of claims, "
+        f"{density['per_words_density']:.2f} / {density['per_words']} words |"
+    )
     lines.append(f"| Critiques with content | {critiques_with_content} |")
     lines.append(f"| Claims with step | {with_step} |")
     lines.append(f"| Distinct checks | {len(checks)} |")
@@ -116,12 +126,17 @@ def render_session_review_with_counts(
     log = (session.get("result") or {}).get("verification_log") or []
     flagged = [entry for entry in log if isinstance(entry, dict) and not entry.get("is_valid")]
     verified = [entry for entry in log if isinstance(entry, dict) and entry.get("is_valid")]
+    result = session.get("result") or {}
+    density = AntiHallucinationResponse.from_dict(
+        result if isinstance(result, dict) else {}
+    ).hallucination_density_report()
     return {
         "markdown": render_session_review(session, top_n=top_n),
         "counts": {
             "total_claims": len(verified) + len(flagged),
             "verified": len(verified),
             "flagged": len(flagged),
+            "hallucination_density": density,
             "checks_seen": sorted({
                 str(entry.get("check") or "").strip()
                 for entry in log

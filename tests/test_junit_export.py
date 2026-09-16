@@ -113,6 +113,21 @@ def test_cli_rejects_unreadable_sessions(tmp_path, capsys) -> None:
     assert "export-junit:" in capsys.readouterr().err
 
 
+def test_density_properties_are_attached_to_the_suite() -> None:
+    xml_text = result_to_junit_xml(_result(
+        ("sky is blue", True, ""),
+        ("moon is cheese", False, "Moon is rock."),
+    ))
+    suite = ET.fromstring(xml_text)
+    props = {
+        prop.get("name"): prop.get("value")
+        for prop in suite.findall("properties/property")
+    }
+    assert props["hallucination_density.total_claims"] == "2"
+    assert props["hallucination_density.flagged_claims"] == "1"
+    assert props["hallucination_density.claim_rate"] == "0.5"
+
+
 def test_subcommand_is_registered() -> None:
     args = _build_parser().parse_args(["export-junit", "session.json"])
     assert args.session == "session.json"

@@ -44,6 +44,7 @@ This package turns that failure mode into a repeatable maintenance step:
 - Async claim verification for faster checks on long drafts.
 - Thread-safe LRU cache for repeated claim verification.
 - Token usage tracking and simple cost estimation.
+- Hallucination density scoring: flagged/total claim rate plus per-100-words density on every report.
 - Custom prompts for draft, extraction, critique, and correction stages.
 - Rich report exports: `to_dict()`, `to_json()`, `to_markdown()`.
 - Command-line interface with `verify`, `resume`, `batch`, and `info` subcommands.
@@ -79,6 +80,7 @@ response = safe.generate(
 
 print(response.content)
 print("claims flagged:", len(response.hallucinations_caught))
+print("density:", response.hallucination_density_report())
 print("tokens used:", response.token_usage.total_tokens)
 ```
 
@@ -156,6 +158,24 @@ print(result.to_json(indent=2))
 # Markdown report (with optional verification log)
 print(result.to_markdown(include_log=True))
 ```
+
+### Hallucination density
+
+Every result reports how densely flagged claims appear, as both a **claim rate** (flagged ÷ total extracted claims) and an optional **per-100-words** score so short drafts are not unfairly penalised for a single miss. An empty claim log scores `0.0` rather than dividing by zero.
+
+```python
+report = result.hallucination_density_report()
+# {
+#   "total_claims": 4,
+#   "flagged_claims": 1,
+#   "claim_rate": 0.25,
+#   "word_count": 80,
+#   "per_words": 100,
+#   "per_words_density": 1.25,
+# }
+```
+
+The same figures are included in `to_dict()` / `to_json()`, the Markdown and HTML reports, and the CLI text output. `VerificationPolicy.max_hallucination_density` gates the per-100-words score.
 
 ## CLI
 
@@ -283,8 +303,8 @@ The CI workflow also runs the demo script so the repository keeps a working exam
 - [x] ~~Expose a small CLI for batch verification workflows.~~ ? v0.2.0
 - [x] ~~Add richer reporting formats for verification results.~~ ? v0.2.0
 - [x] ~~Publish additional examples for research and policy writing use cases.~~ — [`examples/research_policy_demo.py`](examples/research_policy_demo.py)
+- [x] ~~Hallucination density scoring.~~ — flagged/total claim rate plus per-100-words density on responses and reports.
 - [ ] Structured output extraction via OpenAI function calling.
-- [ ] Hallucination density scoring...
 
 ## Release Notes
 

@@ -63,6 +63,7 @@ def test_from_dict_recomputes_summaries_matching_persisted_payload() -> None:
     assert rebuilt.severity_summary() == data["severity_summary"]
     assert rebuilt.evidence_summary() == data["evidence_summary"]
     assert rebuilt.hallucination_density() == pytest.approx(data["hallucination_density"])
+    assert rebuilt.hallucination_density_report() == data["hallucination_density_report"]
 
 
 def test_from_dict_rejects_non_dict_payload() -> None:

@@ -23,6 +23,7 @@ from . import csvreport, history, jsonlreport, junit, mdreport, sessions, templa
 from .core import (
     MODEL_PRICING,
     VALID_SEVERITIES,
+    AntiHallucinationResponse,
     AntiHallucinator,
     VerificationPolicy,
     classify_severity,
@@ -994,6 +995,23 @@ def _format_cost(usage: object, model: str) -> str:
     return f"${cost:.4f}" if cost < 0.01 else f"${cost:.2f}"
 
 
+def _format_hallucination_density(result: object) -> str:
+    """Render density from a response object or a duck-typed test double."""
+
+    formatter = getattr(result, "format_hallucination_density", None)
+    if callable(formatter):
+        return formatter()
+    log = getattr(result, "verification_log", None) or []
+    stub = AntiHallucinationResponse(
+        content=str(getattr(result, "content", "") or ""),
+        verification_log=[entry for entry in log if isinstance(entry, dict)],
+        hallucinations_caught=list(
+            getattr(result, "hallucinations_caught", None) or []
+        ),
+    )
+    return stub.format_hallucination_density()
+
+
 def _render_text_report(args: argparse.Namespace, result: object) -> str:
     """Render the text report; respects ``--quiet-ok`` and redacts nothing."""
 
@@ -1008,6 +1026,7 @@ def _render_text_report(args: argparse.Namespace, result: object) -> str:
         f"Estimated cost: {_format_cost(result.token_usage, args.model)}",
         f"Duration: {result.elapsed_seconds:.2f}s",
         f"Hallucinations caught: {len(result.hallucinations_caught)}",
+        f"Hallucination density: {_format_hallucination_density(result)}",
         "",
     ]
     if result.hallucinations_caught:
@@ -1240,8 +1259,14 @@ def cmd_verify(args: argparse.Namespace) -> None:
         import csv, io
         buf = io.StringIO()
         w = csv.writer(buf)
-        w.writerow(["status", "tokens", "hallucinations", "output"])
-        w.writerow([result.status, result.token_usage.total_tokens, len(result.hallucinations_caught), result.content[:200]])
+        w.writerow(["status", "tokens", "hallucinations", "hallucination_density", "output"])
+        w.writerow([
+            getattr(result, "status", ""),
+            result.token_usage.total_tokens,
+            len(result.hallucinations_caught),
+            _format_hallucination_density(result),
+            result.content[:200],
+        ])
         output = buf.getvalue()
     else:
         # text format
@@ -2405,6 +2430,12 @@ _BATCH_OUTPUT_SCHEMA = [
     ("content", "string", "Final verified text (absent when the item errored)"),
     ("status", "string", "Verification outcome for the item"),
     ("hallucinations_caught", "array[string]", "Claims the pipeline rejected"),
+    ("hallucination_density", "number", "Flagged claims per 100 words of the draft"),
+    (
+        "hallucination_density_report",
+        "object",
+        "Flagged/total claim rate plus per-words density and counts",
+    ),
     ("verification_log", "array[object]", "Per-claim record: claim, valid, source"),
     ("token_usage", "object", "prompt_tokens, completion_tokens, total_tokens"),
     ("elapsed_seconds", "number", "Wall-clock time for the item"),
@@ -2669,6 +2700,16 @@ def _build_batch_index(results: list) -> dict:
             item["claims_total"] = int(total)
             item["claims_verified"] = int(verified)
             item["flagged_count"] = len(record.get("hallucinations_caught") or [])
+            item["claim_rate"] = (
+                round(item["flagged_count"] / item["claims_total"], 3)
+                if item["claims_total"]
+                else 0.0
+            )
+            density = record.get("hallucination_density_report")
+            if isinstance(density, dict):
+                item["hallucination_density"] = density
+            elif "hallucination_density" in record:
+                item["hallucination_density"] = record.get("hallucination_density")
         counts = _severity_counts(record)
         score = sum(SEVERITY_WEIGHTS[name] * counts[name] for name in VALID_SEVERITIES)
         item["severity_counts"] = counts
