@@ -14,9 +14,10 @@ Thank you for your interest in contributing! This project aims to make LLM outpu
    ```bash
    python -m pytest -q
    ```
-5. Run the demo script:
+5. Run the demo scripts:
    ```bash
    python examples/demo.py
+   python examples/research_policy_demo.py
    ```
 
 ## Development Workflow

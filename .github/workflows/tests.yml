@@ -31,3 +31,6 @@ jobs:
 
       - name: Run demo script
         run: python examples/demo.py
+
+      - name: Run research/policy demo script
+        run: python examples/research_policy_demo.py
