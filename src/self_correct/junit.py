@@ -5,6 +5,8 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 from typing import Any, Mapping
 
+from .core import AntiHallucinationResponse
+
 
 def _result_from(payload: Mapping[str, Any]) -> Mapping[str, Any]:
     """Return the embedded result of a session payload, or the payload itself."""
@@ -49,6 +51,17 @@ def result_to_junit_xml(
     elapsed = result.get("elapsed_seconds")
     if isinstance(elapsed, (int, float)):
         suite.set("time", f"{float(elapsed):.3f}")
+
+    density = AntiHallucinationResponse.from_dict(
+        result if isinstance(result, dict) else {}
+    ).hallucination_density_report()
+    properties = ET.SubElement(suite, "properties")
+    for key, value in density.items():
+        ET.SubElement(
+            properties,
+            "property",
+            {"name": f"hallucination_density.{key}", "value": str(value)},
+        )
 
     ET.indent(suite)
     return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(

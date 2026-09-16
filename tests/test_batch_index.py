@@ -63,6 +63,7 @@ def test_counts_fall_back_to_the_verification_log() -> None:
     assert item["claims_total"] == 2
     assert item["claims_verified"] == 1
     assert item["flagged_count"] == 1
+    assert item["claim_rate"] == 0.5
 
 
 def test_empty_results_produce_a_zeroed_index() -> None:

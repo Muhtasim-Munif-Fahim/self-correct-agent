@@ -266,6 +266,9 @@ class AntiHallucinationResponse:
         ``per_words`` words of the final response, so shorter answers are not
         unfairly penalised for a single mistake. An empty response scores
         zero.
+
+        For the claim-rate breakdown (flagged / total claims) see
+        :meth:`hallucination_density_report`.
         """
         if per_words <= 0:
             raise ValueError("per_words must be positive")
@@ -273,6 +276,39 @@ class AntiHallucinationResponse:
         if not words:
             return 0.0
         return len(self.hallucinations_caught) / words * per_words
+
+    def hallucination_density_report(self, per_words: int = 100) -> Dict[str, Any]:
+        """Summarise flagged-claim density against the claim set and draft length.
+
+        ``claim_rate`` is flagged claims divided by total extracted claims
+        (0.0 when the log has no verdicts). ``per_words_density`` is the
+        length-normalised score from :meth:`hallucination_density`, so a
+        short draft is not unfairly penalised for a single miss.
+        """
+        if per_words <= 0:
+            raise ValueError("per_words must be positive")
+        summary = self.claim_summary()
+        total = summary["total_claims"]
+        flagged = summary["flagged_claims"]
+        claim_rate = flagged / total if total else 0.0
+        return {
+            "total_claims": total,
+            "flagged_claims": flagged,
+            "claim_rate": round(claim_rate, 3),
+            "word_count": len(self.content.split()),
+            "per_words": per_words,
+            "per_words_density": round(self.hallucination_density(per_words=per_words), 3),
+        }
+
+    def format_hallucination_density(self, per_words: int = 100) -> str:
+        """Render :meth:`hallucination_density_report` as one report line."""
+
+        report = self.hallucination_density_report(per_words=per_words)
+        return (
+            f"{report['claim_rate']:.1%} of claims "
+            f"({report['flagged_claims']}/{report['total_claims']} flagged), "
+            f"{report['per_words_density']:.2f} per {report['per_words']} words"
+        )
 
     def claim_summary(self) -> Dict[str, int]:
         """Summarise verification verdicts from the claim log.
@@ -401,6 +437,7 @@ class AntiHallucinationResponse:
             "hallucinations_caught": self.hallucinations_caught,
             "verification_log": self.verification_log,
             "hallucination_density": round(self.hallucination_density(), 3),
+            "hallucination_density_report": self.hallucination_density_report(),
             "claim_summary": self.claim_summary(),
             "budget": self.budget_report(),
             "severity_summary": self.severity_summary(),
@@ -522,8 +559,7 @@ class AntiHallucinationResponse:
             )
         lines.append(f"- **Hallucinations caught**: {len(self.hallucinations_caught)}")
         lines.append(
-            f"- **Hallucination density**: {self.hallucination_density():.2f} "
-            "per 100 words"
+            f"- **Hallucination density**: {self.format_hallucination_density()}"
         )
         report = self.budget_report()
         if report["exhausted"]:
@@ -619,7 +655,7 @@ class AntiHallucinationResponse:
         rows.append(("Hallucinations caught", str(len(self.hallucinations_caught))))
         rows.append((
             "Hallucination density",
-            f"{self.hallucination_density():.2f} per 100 words",
+            self.format_hallucination_density(),
         ))
         report = self.budget_report()
         if report["exhausted"]:
