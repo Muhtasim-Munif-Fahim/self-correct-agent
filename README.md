@@ -45,6 +45,7 @@ This package turns that failure mode into a repeatable maintenance step:
 - Thread-safe LRU cache for repeated claim verification.
 - Token usage tracking and simple cost estimation.
 - Hallucination density scoring: flagged/total claim rate plus per-100-words density on every report.
+- Structured JSON extraction and verdicts via OpenAI JSON mode (`response_format`) or function/tool calling.
 - Custom prompts for draft, extraction, critique, and correction stages.
 - Rich report exports: `to_dict()`, `to_json()`, `to_markdown()`.
 - Command-line interface with `verify`, `resume`, `batch`, and `info` subcommands.
@@ -82,6 +83,47 @@ print(response.content)
 print("claims flagged:", len(response.hallucinations_caught))
 print("density:", response.hallucination_density_report())
 print("tokens used:", response.token_usage.total_tokens)
+```
+
+## Structured output
+
+Claim extraction and critique default to free-text parsing (`1. Claim…`, `VERIFIED: True`). When the client supports OpenAI JSON mode or function calling, you can ask for schema-validated JSON instead, then read the run as a typed result.
+
+```python
+from openai import OpenAI
+from self_correct import AntiHallucinator
+
+client = OpenAI()
+safe = AntiHallucinator(client=client, structured_output="json")  # or "function"
+
+typed = safe.generate_structured(
+    model="gpt-4o-mini",
+    prompt="Explain the Transformer architecture in two short paragraphs.",
+)
+
+print(typed.content)
+for claim in typed.claims:
+    print(claim.is_valid, claim.critique)
+
+# Validated dict / JSON, or a Pydantic model
+data = typed.to_dict()
+model = typed.to_pydantic()
+```
+
+`structured_output="json"` sends `response_format={"type": "json_object"}` on the extract and verify calls. `structured_output="function"` uses OpenAI tool calling (`extract_claims` / `verify_claim`). Draft and correction stay plain text. If the client rejects those extra kwargs, the pipeline retries as free text and falls back to the numbered-list / `VERIFIED:` parsers.
+
+`AntiHallucinationResponse.to_structured()` is available on every run, including ones that did not use JSON mode.
+
+```python
+result = safe.generate(model="gpt-4o-mini", prompt="...")
+typed = result.to_structured()
+```
+
+CLI:
+
+```bash
+self-correct verify --model gpt-4o-mini --prompt "Explain quantum computing." --structured-output
+self-correct verify --model gpt-4o-mini --prompt "Explain quantum computing." --structured-output function
 ```
 
 ## Verification Tools
@@ -188,6 +230,9 @@ self-correct verify --model gpt-4o-mini --prompt "Explain quantum computing." --
 # Read prompt from file and output as JSON
 self-correct verify --model gpt-4o-mini --file input.txt --output report.json
 
+# Enable JSON-mode claim extraction and verdicts
+self-correct verify --model gpt-4o-mini --prompt "..." --structured-output
+
 # Enable verification tools
 self-correct verify --model gpt-4o-mini --prompt "..." --tools duckduckgo wikipedia
 
@@ -229,7 +274,7 @@ self-correct resume session.json --model gpt-4o --strictness 0.8 --output report
 self-correct resume session.json --save-session session-retry.json
 ```
 
-CLI flags on `resume` replace the matching saved values. The current overrides are `--model`, `--model-draft`, `--model-extract`, `--model-verify`, `--model-correct`, `--strictness`, `--provider`, `--base-url`, `--api-key-env`, `--max-retries`, `--retry-backoff`, `--max-calls`, `--checks`, `--output`, `--output-format`, `--include-log`, `--save-session`, and `--fail-on-hallucination`. Everything else comes from the session file.
+CLI flags on `resume` replace the matching saved values. The current overrides are `--model`, `--model-draft`, `--model-extract`, `--model-verify`, `--model-correct`, `--strictness`, `--provider`, `--base-url`, `--api-key-env`, `--max-retries`, `--retry-backoff`, `--max-calls`, `--checks`, `--output`, `--output-format`, `--include-log`, `--save-session`, `--fail-on-hallucination`, and `--structured-output`. Everything else comes from the session file.
 
 Batch `--resume-from` is a different feature: it skips already-completed items in a batch file. Use `resume` for a single saved session.
 
@@ -287,6 +332,8 @@ print(safe.cache_size)
 safe.clear_cache()
 ```
 
+`generate_structured()` is the same pipeline as `generate()` but returns a `StructuredVerificationResult` (claim list, summaries, token usage) instead of the report object.
+
 ## Tests
 
 Run the test suite locally:
@@ -304,7 +351,7 @@ The CI workflow also runs the demo script so the repository keeps a working exam
 - [x] ~~Add richer reporting formats for verification results.~~ ? v0.2.0
 - [x] ~~Publish additional examples for research and policy writing use cases.~~ — [`examples/research_policy_demo.py`](examples/research_policy_demo.py)
 - [x] ~~Hallucination density scoring.~~ — flagged/total claim rate plus per-100-words density on responses and reports.
-- [ ] Structured output extraction via OpenAI function calling.
+- [x] ~~Structured output extraction via OpenAI function calling.~~ — JSON mode (`response_format`) or tool/function calling for claim extraction and verdicts; typed results via `generate_structured()` / `to_structured()`.
 
 ## Release Notes
 

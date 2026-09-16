@@ -201,6 +201,18 @@ def _build_parser() -> argparse.ArgumentParser:
             "markdown / HTML outputs already only print what is needed."
         ),
     )
+    verify.add_argument(
+        "--structured-output",
+        nargs="?",
+        const="json",
+        choices=["json", "function"],
+        default=None,
+        help=(
+            "Ask the model for JSON claims and verdicts. "
+            "Pass 'json' (the default when the flag is present) for OpenAI "
+            "JSON mode / response_format, or 'function' for tool calling."
+        ),
+    )
 
     resume = sub.add_parser(
         "resume",
@@ -276,6 +288,14 @@ def _build_parser() -> argparse.ArgumentParser:
     resume.add_argument(
         "--checks", default=None, metavar="PATH",
         help="Apply JSON-defined content checks to the final text",
+    )
+    resume.add_argument(
+        "--structured-output",
+        nargs="?",
+        const="json",
+        choices=["json", "function"],
+        default=None,
+        help="Override the saved structured-output mode (JSON mode or function calling)",
     )
 
     # tools subcommand
@@ -807,6 +827,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Apply JSON-defined content checks to each item's final text",
     )
     batch.add_argument(
+        "--structured-output",
+        nargs="?",
+        const="json",
+        choices=["json", "function"],
+        default=None,
+        help=(
+            "Ask the model for JSON claims and verdicts. "
+            "Pass 'json' (default when the flag is present) for OpenAI JSON "
+            "mode, or 'function' for tool calling."
+        ),
+    )
+    batch.add_argument(
         "--resume-from", default=None, metavar="PATH",
         help=(
             "Reuse completed records from a previous output file and "
@@ -1074,6 +1106,8 @@ def _print_dry_run_plan(
     print(f"{'Timeout':<18}{f'{args.timeout}s' if getattr(args, 'timeout', None) else 'none'}")
     max_calls = getattr(args, "max_calls", None)
     print(f"{'Max calls':<18}{max_calls if max_calls is not None else 'unlimited'}")
+    structured = getattr(args, "structured_output", None)
+    print(f"{'Structured':<18}{structured or 'off'}")
     print(f"{'Output':<18}{args.output or 'stdout'}"
           f" ({_detect_output_format(args.output, args.output_format)})")
     print()
@@ -1186,6 +1220,7 @@ def cmd_verify(args: argparse.Namespace) -> None:
         model_extract=getattr(args, "model_extract", None),
         model_verify=getattr(args, "model_verify", None),
         model_correct=getattr(args, "model_correct", None),
+        structured_output=getattr(args, "structured_output", None),
     )
     cache_file = getattr(args, "cache_file", None)
     if cache_file and args.no_cache:
@@ -1243,6 +1278,7 @@ def cmd_verify(args: argparse.Namespace) -> None:
                 "model_extract": getattr(args, "model_extract", None),
                 "model_verify": getattr(args, "model_verify", None),
                 "model_correct": getattr(args, "model_correct", None),
+                "structured_output": getattr(args, "structured_output", None),
             },
             result=result.to_dict(),
         )
@@ -1394,6 +1430,11 @@ def _cmd_resume(args: argparse.Namespace) -> int | None:
         model_extract=args.model_extract or config.get("model_extract"),
         model_verify=args.model_verify or config.get("model_verify"),
         model_correct=args.model_correct or config.get("model_correct"),
+        structured_output=(
+            args.structured_output
+            if getattr(args, "structured_output", None) is not None
+            else config.get("structured_output")
+        ),
     )
     return cmd_verify(verify_args)
 
@@ -2845,6 +2886,7 @@ def cmd_batch(args: argparse.Namespace) -> None:
             model_extract=getattr(args, "model_extract", None),
             model_verify=getattr(args, "model_verify", None),
             model_correct=getattr(args, "model_correct", None),
+            structured_output=getattr(args, "structured_output", None),
         )
     hallu = make_hallucinator()
 

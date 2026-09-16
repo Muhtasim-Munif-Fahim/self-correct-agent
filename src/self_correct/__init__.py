@@ -10,6 +10,7 @@ from .core import (
     VerificationPolicy,
     load_content_checks,
 )
+from .structured import StructuredClaim, StructuredVerificationResult
 from .tools import DuckDuckGoSearchTool, SearchResult, StaticKnowledgeTool, Tool, WikipediaSearchTool
 
 __version__ = "0.2.4"
@@ -22,6 +23,8 @@ __all__ = [
     "DuckDuckGoSearchTool",
     "SearchResult",
     "StaticKnowledgeTool",
+    "StructuredClaim",
+    "StructuredVerificationResult",
     "__version__",
     "TokenUsage",
     "VerificationDecision",
