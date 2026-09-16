@@ -230,13 +230,14 @@ Output file (adds verification results to each input line):
 {"id": "002", "content": "...", "hallucinations_caught": ["Claim '...' flagged: ..."], "token_usage": {...}, "elapsed_seconds": 0.89}
 ```
 
-## Demo
+## Demo / Examples
 
-The repository includes a self-contained demo that uses a mocked client, so it runs without API keys.
+The repository includes self-contained examples that use a mocked client, so they run without API keys.
 
 - Script: [`examples/demo.py`](examples/demo.py)
 - Notebook: [`examples/demo.ipynb`](examples/demo.ipynb)
 - Tool comparison demo: [`examples/tool_comparison_demo.py`](examples/tool_comparison_demo.py)
+- Research and policy writing: [`examples/research_policy_demo.py`](examples/research_policy_demo.py) ([notebook](examples/research_policy_demo.ipynb))
 
 The screenshot below is a lightweight visual summary of the pipeline and demo output.
 
@@ -281,7 +282,7 @@ The CI workflow also runs the demo script so the repository keeps a working exam
 - [x] ~~Add more reference tools beyond web search.~~ ? v0.2.0
 - [x] ~~Expose a small CLI for batch verification workflows.~~ ? v0.2.0
 - [x] ~~Add richer reporting formats for verification results.~~ ? v0.2.0
-- [ ] Publish additional examples for research and policy writing use cases.
+- [x] ~~Publish additional examples for research and policy writing use cases.~~ — [`examples/research_policy_demo.py`](examples/research_policy_demo.py)
 - [ ] Structured output extraction via OpenAI function calling.
 - [ ] Hallucination density scoring...
 
