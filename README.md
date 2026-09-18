@@ -7,18 +7,41 @@
 
 `self-correct-agent` is a small Python library for wrapping an LLM client with a **Chain-of-Verification (CoV)** workflow. It drafts a response, extracts factual claims, critiques each claim, and rewrites the output when unsupported statements are found.
 
-It is designed for people who want a practical hallucination-reduction layer without having to replace their existing OpenAI-compatible client.
+It is designed for people who want a practical hallucination-reduction layer without having to replace their existing OpenAI-compatible client. Anthropic is supported through a native Messages API adapter that still exposes that same `chat.completions.create()` surface.
 
 ## Integrations
 
-Works with any client that exposes `client.chat.completions.create()`:
+The pipeline calls `client.chat.completions.create()`. OpenAI, Ollama, and other OpenAI-compatible servers already speak that protocol. Anthropic's Messages API does not, so this package ships an adapter.
 
-| Provider | Setup |
-| --- | --- |
-| **OpenAI** | `from openai import OpenAI` |
-| **Anthropic** (via OpenAI SDK compat) | point `base_url` at your proxy |
-| **LiteLLM** | wrap with LiteLLM's OpenAI-compatible interface |
-| **Ollama / local** | `OpenAI(base_url="http://localhost:11434/v1", api_key="ollama")` |
+| Provider | Python | CLI |
+| --- | --- | --- |
+| **OpenAI** | `OpenAI()` | `--provider openai` |
+| **Ollama / local** | `OpenAI(base_url="http://localhost:11434/v1", api_key="ollama")` | `--provider ollama` |
+| **Anthropic** | `AnthropicMessagesClient()` | `--provider anthropic` |
+| **Custom OpenAI-compat** (vLLM, LM Studio, OpenRouter, Together, LiteLLM) | `OpenAI(base_url="...", api_key="...")` | `--provider custom --base-url URL` |
+
+`--base-url` overrides the provider default (Ollama: `http://localhost:11434/v1`, Anthropic: `https://api.anthropic.com/v1`). `--api-key-env` names the environment variable holding the key. Ollama needs no key. Anthropic reads `ANTHROPIC_API_KEY`; OpenAI and `custom` read `OPENAI_API_KEY`.
+
+```python
+from openai import OpenAI
+from self_correct import AnthropicMessagesClient, AntiHallucinator, build_client
+
+# OpenAI-compatible local server (Ollama, vLLM, LM Studio, ...)
+ollama = OpenAI(base_url="http://localhost:11434/v1", api_key="ollama")
+safe = AntiHallucinator(client=ollama)
+safe.generate(model="llama3.2", prompt="Explain transformers in two sentences.")
+
+# Native Anthropic Messages API (translates to chat.completions.create)
+anthropic = AnthropicMessagesClient()  # uses $ANTHROPIC_API_KEY
+safe = AntiHallucinator(client=anthropic)
+safe.generate(model="claude-sonnet-4-5", prompt="Explain transformers in two sentences.")
+
+# Same clients via the CLI factory
+client = build_client("ollama")
+client = build_client("anthropic", base_url="https://api.anthropic.com/v1")
+```
+
+JSON mode (`response_format`) and OpenAI tool calling are not part of Anthropic's Messages API. When those kwargs are rejected, the pipeline retries as free text and uses the numbered-list / `VERIFIED:` parsers.
 
 See [`benchmarks/`](benchmarks/) for a 20-prompt eval harness (mock + live modes).
 
@@ -36,7 +59,7 @@ This package turns that failure mode into a repeatable maintenance step:
 ## Features
 
 - 4-phase Chain-of-Verification pipeline: draft, extract, critique, correct.
-- OpenAI-compatible client support through `client.chat.completions.create()`.
+- OpenAI-compatible client support through `client.chat.completions.create()`, plus a native Anthropic Messages API adapter.
 - Pluggable verification **Tool** interface with three built-in backends:
   - `DuckDuckGoSearchTool` — web search (default)
   - `WikipediaSearchTool` — Wikipedia article summaries
@@ -249,6 +272,15 @@ echo '{"id": "1", "prompt": "Explain transformers"}
 
 self-correct batch --input prompts.jsonl --output results.jsonl --model gpt-4o-mini --format json
 
+# Local Ollama (OpenAI-compatible /v1, no API key)
+self-correct verify --provider ollama --model llama3.2 --prompt "Explain transformers."
+
+# Anthropic Messages API (reads ANTHROPIC_API_KEY)
+self-correct verify --provider anthropic --model claude-sonnet-4-5 --prompt "Explain transformers."
+
+# Any other OpenAI-compatible endpoint
+self-correct verify --provider custom --base-url http://localhost:8000/v1 --model my-model --prompt "..."
+
 # Validate a config file
 self-correct config validate --config self-correct.json
 
@@ -352,6 +384,7 @@ The CI workflow also runs the demo script so the repository keeps a working exam
 - [x] ~~Publish additional examples for research and policy writing use cases.~~ — [`examples/research_policy_demo.py`](examples/research_policy_demo.py)
 - [x] ~~Hallucination density scoring.~~ — flagged/total claim rate plus per-100-words density on responses and reports.
 - [x] ~~Structured output extraction via OpenAI function calling.~~ — JSON mode (`response_format`) or tool/function calling for claim extraction and verdicts; typed results via `generate_structured()` / `to_structured()`.
+- [x] ~~Ollama / Anthropic client support.~~ — `--provider {openai,ollama,anthropic,custom}`; Anthropic uses a native Messages API adapter.
 
 ## Release Notes
 
