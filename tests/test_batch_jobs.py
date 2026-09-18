@@ -19,6 +19,7 @@ def _install_parallel_pipeline(monkeypatch):
 
     fake_module = MagicMock()
     monkeypatch.setitem(sys.modules, "openai", fake_module)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
 
     state = {"active": 0, "max_active": 0}
     lock = threading.Lock()
@@ -151,6 +152,7 @@ def test_jobs_single_item_failure_does_not_drop_other_items(
 
     fake_module = MagicMock()
     monkeypatch.setitem(sys.modules, "openai", fake_module)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
 
     class FakeHallucinator:
         def __init__(self, **kwargs):

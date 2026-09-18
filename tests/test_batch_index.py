@@ -82,6 +82,7 @@ def _install_fake_pipeline(monkeypatch, responses):
 
     fake_module = MagicMock()
     monkeypatch.setitem(sys.modules, "openai", fake_module)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
 
     class FakeHallucinator:
         def __init__(self, **kwargs):

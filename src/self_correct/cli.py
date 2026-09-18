@@ -141,7 +141,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     verify.add_argument(
         "--provider", choices=["openai", "ollama", "anthropic", "custom"], default="openai",
-        help="Where to send requests (default: openai)",
+        help="LLM backend: openai, ollama, anthropic (Messages API), or custom",
     )
     verify.add_argument(
         "--base-url", default=None,
@@ -851,7 +851,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     batch.add_argument(
         "--provider", choices=["openai", "ollama", "anthropic", "custom"], default="openai",
-        help="Where to send requests (default: openai)",
+        help="LLM backend: openai, ollama, anthropic (Messages API), or custom",
     )
     batch.add_argument(
         "--base-url", default=None,
@@ -953,62 +953,26 @@ def _detect_output_format(output_path: Optional[str], format_override: Optional[
     return "text"
 
 
-#: Default endpoint for each provider. `custom` has none by design: it exists
-#: precisely for endpoints this package does not know about.
-PROVIDER_BASE_URLS = {
-    "openai": None,
-    "ollama": "http://localhost:11434/v1",
-    "anthropic": "https://api.anthropic.com/v1",
-    "custom": None,
-}
+from .providers import build_client as _construct_provider_client
 
 
 def _build_client(args: argparse.Namespace):
     """Construct the API client for the selected provider.
 
-    Every supported provider speaks the OpenAI chat-completions protocol, so
-    one client class covers all of them and only the base URL and key differ.
-    That is also what the core requires: it calls
-    `client.chat.completions.create()` and nothing else.
+    OpenAI, Ollama, and ``custom`` use the OpenAI SDK against a chat-completions
+    endpoint. Anthropic uses a native Messages API adapter that still exposes
+    ``client.chat.completions.create()`` for the core pipeline.
     """
 
-    import os
-
-    from openai import OpenAI
-
-    provider = getattr(args, "provider", "openai") or "openai"
-    base_url = getattr(args, "base_url", None) or PROVIDER_BASE_URLS.get(provider)
-
-    if provider == "custom" and not base_url:
-        raise SystemExit("--provider custom requires --base-url")
-
-    key_env = getattr(args, "api_key_env", None) or "OPENAI_API_KEY"
-    api_key = os.environ.get(key_env)
-    if not api_key:
-        # A local Ollama server ignores the key but the client insists on one.
-        if provider == "ollama":
-            api_key = "ollama"
-        # Anthropic's OpenAI-compatible endpoint requires ANTHROPIC_API_KEY.
-        elif provider == "anthropic":
-            api_key = os.environ.get("ANTHROPIC_API_KEY")
-            if not api_key:
-                raise SystemExit(
-                    "No API key found in $" + key_env + " or $ANTHROPIC_API_KEY. "
-                    "Set one, or pass --api-key-env to name a different variable."
-                )
-        else:
-            raise SystemExit(
-                f"No API key found in ${key_env}. Set it, or pass --api-key-env "
-                "to name a different variable."
-            )
-
-    kwargs = {"api_key": api_key}
-    if base_url:
-        kwargs["base_url"] = base_url
-    timeout = getattr(args, "timeout", None)
-    if timeout:
-        kwargs["timeout"] = timeout
-    return OpenAI(**kwargs)
+    try:
+        return _construct_provider_client(
+            getattr(args, "provider", "openai") or "openai",
+            base_url=getattr(args, "base_url", None),
+            api_key_env=getattr(args, "api_key_env", None),
+            timeout=getattr(args, "timeout", None),
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def _format_cost(usage: object, model: str) -> str:
@@ -1170,8 +1134,6 @@ def _record_verify_run(
 
 def cmd_verify(args: argparse.Namespace) -> None:
     """Execute the verify subcommand."""
-    from openai import OpenAI
-
     prompt = _read_prompt(args.prompt, args.file)
 
     tool_names = [name for name in ("duckduckgo", "wikipedia") if name in args.tools]
@@ -2857,8 +2819,6 @@ def cmd_batch(args: argparse.Namespace) -> None:
             print(f"Batch plan written to {plan_json_path}", file=sys.stderr)
         return 0
 
-    from openai import OpenAI
-
     tools = []
     if "duckduckgo" in args.tools:
         tools.append(DuckDuckGoSearchTool())
@@ -2875,7 +2835,7 @@ def cmd_batch(args: argparse.Namespace) -> None:
 
     def make_hallucinator() -> AntiHallucinator:
         return AntiHallucinator(
-            client=OpenAI(),
+            client=_build_client(args),
             strictness=args.strictness,
             tools=tools or None,
             cache_size=0 if args.no_cache else 256,

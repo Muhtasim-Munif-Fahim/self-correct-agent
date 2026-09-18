@@ -12,7 +12,7 @@ license = { text = "MIT" }
 authors = [
   { name = "Muhtasim Munif Fahim" }
 ]
-keywords = ["llm", "hallucination", "verification", "openai", "agent"]
+keywords = ["llm", "hallucination", "verification", "openai", "ollama", "anthropic", "agent"]
 dependencies = [
   "openai>=1.30.0"
 ]
